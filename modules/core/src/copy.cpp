@@ -481,14 +481,13 @@ enum { FLIP_COLS = 1 << 0, FLIP_ROWS = 1 << 1, FLIP_BOTH = FLIP_ROWS | FLIP_COLS
 
 static bool ocl_flip(InputArray _src, OutputArray _dst, int flipCode )
 {
-    int type = _src.type(), cn = CV_MAT_CN(type);
+    CV_Assert(flipCode >= - 1 && flipCode <= 1);
+    int type = _src.type(), depth = CV_MAT_DEPTH(type), cn = CV_MAT_CN(type), flipType;
 
-    if (cn > 4 || cn == 3)
+    if (cn > 4)
         return false;
 
     const char * kernelName;
-    int flipType;
-
     if (flipCode == 0)
         kernelName = "arithm_flip_rows", flipType = FLIP_ROWS;
     else if (flipCode > 0)
@@ -496,29 +495,27 @@ static bool ocl_flip(InputArray _src, OutputArray _dst, int flipCode )
     else
         kernelName = "arithm_flip_rows_cols", flipType = FLIP_BOTH;
 
-    Size size = _src.size();
-    int cols = size.width, rows = size.height;
-    if ((cols == 1 && flipType == FLIP_COLS) ||
-            (rows == 1 && flipType == FLIP_ROWS) ||
-            (rows == 1 && cols == 1 && flipType == FLIP_BOTH))
-    {
-        _src.copyTo(_dst);
-        return true;
-    }
-
     ocl::Kernel k(kernelName, ocl::core::flip_oclsrc,
-        format( "-D type=%s", ocl::memopTypeToStr(type)));
+        format( "-D T=%s -D T1=%s -D cn=%d", ocl::memopTypeToStr(type),
+                ocl::memopTypeToStr(depth), cn));
     if (k.empty())
         return false;
 
+    Size size = _src.size();
     _dst.create(size, type);
     UMat src = _src.getUMat(), dst = _dst.getUMat();
 
-    cols = flipType == FLIP_COLS ? ((cols+1)/2) : cols;
-    rows = flipType & FLIP_ROWS ? ((rows+1)/2) : rows;
+    int cols = size.width, rows = size.height;
+    cols = flipType == FLIP_COLS ? (cols + 1) >> 1 : cols;
+    rows = flipType & FLIP_ROWS ? (rows + 1) >> 1 : rows;
 
-    size_t globalsize[2] = { cols, rows };
-    return k.args(ocl::KernelArg::ReadOnlyNoSize(src), ocl::KernelArg::WriteOnly(dst), rows, cols).run(2, globalsize, NULL, false);
+    k.args(ocl::KernelArg::ReadOnlyNoSize(src),
+           ocl::KernelArg::WriteOnly(dst), rows, cols);
+
+    size_t maxWorkGroupSize = ocl::Device::getDefault().maxWorkGroupSize();
+    CV_Assert(maxWorkGroupSize % 4 == 0);
+    size_t globalsize[2] = { cols, rows }, localsize[2] = { maxWorkGroupSize / 4, 4 };
+    return k.run(2, globalsize, flipType == FLIP_COLS ? localsize : NULL, false);
 }
 
 #endif
@@ -526,13 +523,60 @@ static bool ocl_flip(InputArray _src, OutputArray _dst, int flipCode )
 void flip( InputArray _src, OutputArray _dst, int flip_mode )
 {
     CV_Assert( _src.dims() <= 2 );
+    Size size = _src.size();
 
-    CV_OCL_RUN( _dst.isUMat(), ocl_flip(_src,_dst, flip_mode))
+    if (flip_mode < 0)
+    {
+        if (size.width == 1)
+            flip_mode = 0;
+        if (size.height == 1)
+            flip_mode = 1;
+    }
+
+    if ((size.width == 1 && flip_mode > 0) ||
+        (size.height == 1 && flip_mode == 0) ||
+        (size.height == 1 && size.width == 1 && flip_mode < 0))
+    {
+        return _src.copyTo(_dst);
+    }
+
+    CV_OCL_RUN( _dst.isUMat(), ocl_flip(_src, _dst, flip_mode))
 
     Mat src = _src.getMat();
-    _dst.create( src.size(), src.type() );
+    int type = src.type();
+    _dst.create( size, type );
     Mat dst = _dst.getMat();
-    size_t esz = src.elemSize();
+    size_t esz = CV_ELEM_SIZE(type);
+
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+    typedef IppStatus (CV_STDCALL * ippiMirror)(const void * pSrc, int srcStep, void * pDst, int dstStep, IppiSize roiSize, IppiAxis flip);
+    ippiMirror ippFunc =
+        type == CV_8UC1 ? (ippiMirror)ippiMirror_8u_C1R :
+        type == CV_8UC3 ? (ippiMirror)ippiMirror_8u_C3R :
+        type == CV_8UC4 ? (ippiMirror)ippiMirror_8u_C4R :
+        type == CV_16UC1 ? (ippiMirror)ippiMirror_16u_C1R :
+        type == CV_16UC3 ? (ippiMirror)ippiMirror_16u_C3R :
+        type == CV_16UC4 ? (ippiMirror)ippiMirror_16u_C4R :
+        type == CV_16SC1 ? (ippiMirror)ippiMirror_16s_C1R :
+        type == CV_16SC3 ? (ippiMirror)ippiMirror_16s_C3R :
+        type == CV_16SC4 ? (ippiMirror)ippiMirror_16s_C4R :
+        type == CV_32SC1 ? (ippiMirror)ippiMirror_32s_C1R :
+        type == CV_32SC3 ? (ippiMirror)ippiMirror_32s_C3R :
+        type == CV_32SC4 ? (ippiMirror)ippiMirror_32s_C4R :
+        type == CV_32FC1 ? (ippiMirror)ippiMirror_32f_C1R :
+        type == CV_32FC3 ? (ippiMirror)ippiMirror_32f_C3R :
+        type == CV_32FC4 ? (ippiMirror)ippiMirror_32f_C4R : 0;
+    IppiAxis axis = flip_mode == 0 ? ippAxsHorizontal :
+        flip_mode > 0 ? ippAxsVertical : ippAxsBoth;
+
+    if (ippFunc != 0)
+    {
+        IppStatus status = ippFunc(src.data, (int)src.step, dst.data, (int)dst.step, ippiSize(src.cols, src.rows), axis);
+        if (status >= 0)
+            return;
+        setIppErrorStatus();
+    }
+#endif
 
     if( flip_mode <= 0 )
         flipVert( src.data, src.step, dst.data, dst.step, src.size(), esz );
@@ -778,18 +822,26 @@ namespace cv {
 static bool ocl_copyMakeBorder( InputArray _src, OutputArray _dst, int top, int bottom,
                                 int left, int right, int borderType, const Scalar& value )
 {
-    int type = _src.type(), cn = CV_MAT_CN(type);
+    int type = _src.type(), cn = CV_MAT_CN(type), depth = CV_MAT_DEPTH(type);
     bool isolated = (borderType & BORDER_ISOLATED) != 0;
     borderType &= ~cv::BORDER_ISOLATED;
 
     if ( !(borderType == BORDER_CONSTANT || borderType == BORDER_REPLICATE || borderType == BORDER_REFLECT ||
            borderType == BORDER_WRAP || borderType == BORDER_REFLECT_101) ||
-         cn == 3 || cn > 4)
+         cn > 4)
         return false;
 
     const char * const borderMap[] = { "BORDER_CONSTANT", "BORDER_REPLICATE", "BORDER_REFLECT", "BORDER_WRAP", "BORDER_REFLECT_101" };
-    ocl::Kernel k("copyMakeBorder", ocl::core::copymakeborder_oclsrc,
-                  format("-D T=%s -D %s", ocl::memopTypeToStr(type), borderMap[borderType]));
+    int scalarcn = cn == 3 ? 4 : cn;
+    int sctype = CV_MAKETYPE(depth, scalarcn);
+    String buildOptions = format(
+            "-D T=%s -D %s "
+            "-D T1=%s -D cn=%d -D ST=%s",
+            ocl::memopTypeToStr(type), borderMap[borderType],
+            ocl::memopTypeToStr(depth), cn, ocl::memopTypeToStr(sctype)
+    );
+
+    ocl::Kernel k("copyMakeBorder", ocl::core::copymakeborder_oclsrc, buildOptions);
     if (k.empty())
         return false;
 
@@ -821,7 +873,7 @@ static bool ocl_copyMakeBorder( InputArray _src, OutputArray _dst, int top, int 
     }
 
     k.args(ocl::KernelArg::ReadOnly(src), ocl::KernelArg::WriteOnly(dst),
-           top, left, ocl::KernelArg::Constant(Mat(1, 1, type, value)));
+           top, left, ocl::KernelArg::Constant(Mat(1, 1, sctype, value)));
 
     size_t globalsize[2] = { dst.cols, dst.rows };
     return k.run(2, globalsize, NULL, false);

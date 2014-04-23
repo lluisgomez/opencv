@@ -415,42 +415,54 @@ namespace cv {
 
 static bool ocl_merge( InputArrayOfArrays _mv, OutputArray _dst )
 {
-    std::vector<UMat> src;
+    std::vector<UMat> src, ksrc;
     _mv.getUMatVector(src);
     CV_Assert(!src.empty());
 
     int type = src[0].type(), depth = CV_MAT_DEPTH(type);
     Size size = src[0].size();
 
-    size_t srcsize = src.size();
-    for (size_t i = 0; i < srcsize; ++i)
+    for (size_t i = 0, srcsize = src.size(); i < srcsize; ++i)
     {
-        int itype = src[i].type(), icn = CV_MAT_CN(itype), idepth = CV_MAT_DEPTH(itype);
-        if (src[i].dims > 2 || icn != 1)
+        int itype = src[i].type(), icn = CV_MAT_CN(itype), idepth = CV_MAT_DEPTH(itype),
+                esz1 = CV_ELEM_SIZE1(idepth);
+        if (src[i].dims > 2)
             return false;
-        CV_Assert(size == src[i].size() && depth == idepth);
-    }
 
-    String srcargs, srcdecl, processelem;
-    for (size_t i = 0; i < srcsize; ++i)
+        CV_Assert(size == src[i].size() && depth == idepth);
+
+        for (int cn = 0; cn < icn; ++cn)
+        {
+            UMat tsrc = src[i];
+            tsrc.offset += cn * esz1;
+            ksrc.push_back(tsrc);
+        }
+    }
+    int dcn = (int)ksrc.size();
+
+    String srcargs, srcdecl, processelem, cndecl;
+    for (int i = 0; i < dcn; ++i)
     {
         srcargs += format("DECLARE_SRC_PARAM(%d)", i);
         srcdecl += format("DECLARE_DATA(%d)", i);
         processelem += format("PROCESS_ELEM(%d)", i);
+        cndecl += format(" -D scn%d=%d", i, ksrc[i].channels());
     }
 
     ocl::Kernel k("merge", ocl::core::split_merge_oclsrc,
-                  format("-D OP_MERGE -D cn=%d -D T=%s -D DECLARE_SRC_PARAMS_N=%s -D DECLARE_DATA_N=%s -D PROCESS_ELEMS_N=%s",
-                         (int)srcsize, ocl::memopTypeToStr(depth), srcargs.c_str(), srcdecl.c_str(), processelem.c_str()));
+                  format("-D OP_MERGE -D cn=%d -D T=%s -D DECLARE_SRC_PARAMS_N=%s"
+                         " -D DECLARE_DATA_N=%s -D PROCESS_ELEMS_N=%s%s",
+                         dcn, ocl::memopTypeToStr(depth), srcargs.c_str(),
+                         srcdecl.c_str(), processelem.c_str(), cndecl.c_str()));
     if (k.empty())
         return false;
 
-    _dst.create(size, CV_MAKE_TYPE(depth, (int)srcsize));
+    _dst.create(size, CV_MAKE_TYPE(depth, dcn));
     UMat dst = _dst.getUMat();
 
     int argidx = 0;
-    for (size_t i = 0; i < srcsize; ++i)
-        argidx = k.set(argidx, ocl::KernelArg::ReadOnlyNoSize(src[i]));
+    for (int i = 0; i < dcn; ++i)
+        argidx = k.set(argidx, ocl::KernelArg::ReadOnlyNoSize(ksrc[i]));
     k.set(argidx, ocl::KernelArg::WriteOnly(dst));
 
     size_t globalsize[2] = { dst.cols, dst.rows };
@@ -1067,6 +1079,41 @@ dtype* dst, size_t dstep, Size size, double* scale) \
     cvtScale_(src, sstep, dst, dstep, size, (wtype)scale[0], (wtype)scale[1]); \
 }
 
+#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+#define DEF_CVT_FUNC_F(suffix, stype, dtype, ippFavor) \
+static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
+                         dtype* dst, size_t dstep, Size size, double*) \
+{ \
+    if (src && dst)\
+    {\
+        if (ippiConvert_##ippFavor(src, (int)sstep, dst, (int)dstep, ippiSize(size.width, size.height)) >= 0) \
+            return; \
+        setIppErrorStatus(); \
+    }\
+    cvt_(src, sstep, dst, dstep, size); \
+}
+
+#define DEF_CVT_FUNC_F2(suffix, stype, dtype, ippFavor) \
+static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
+                         dtype* dst, size_t dstep, Size size, double*) \
+{ \
+    if (src && dst)\
+    {\
+        if (ippiConvert_##ippFavor(src, (int)sstep, dst, (int)dstep, ippiSize(size.width, size.height), ippRndFinancial, 0) >= 0) \
+            return; \
+        setIppErrorStatus(); \
+    }\
+    cvt_(src, sstep, dst, dstep, size); \
+}
+#else
+#define DEF_CVT_FUNC_F(suffix, stype, dtype, ippFavor) \
+static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
+                         dtype* dst, size_t dstep, Size size, double*) \
+{ \
+    cvt_(src, sstep, dst, dstep, size); \
+}
+#define DEF_CVT_FUNC_F2 DEF_CVT_FUNC_F
+#endif
 
 #define DEF_CVT_FUNC(suffix, stype, dtype) \
 static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
@@ -1077,7 +1124,7 @@ static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
 
 #define DEF_CPY_FUNC(suffix, stype) \
 static void cvt##suffix( const stype* src, size_t sstep, const uchar*, size_t, \
-stype* dst, size_t dstep, Size size, double*) \
+                         stype* dst, size_t dstep, Size size, double*) \
 { \
     cpy_(src, sstep, dst, dstep, size); \
 }
@@ -1148,48 +1195,48 @@ DEF_CVT_SCALE_FUNC(32f64f, float, double, double)
 DEF_CVT_SCALE_FUNC(64f,    double, double, double)
 
 DEF_CPY_FUNC(8u,     uchar)
-DEF_CVT_FUNC(8s8u,   schar, uchar)
-DEF_CVT_FUNC(16u8u,  ushort, uchar)
-DEF_CVT_FUNC(16s8u,  short, uchar)
-DEF_CVT_FUNC(32s8u,  int, uchar)
-DEF_CVT_FUNC(32f8u,  float, uchar)
+DEF_CVT_FUNC_F(8s8u,   schar, uchar, 8s8u_C1Rs)
+DEF_CVT_FUNC_F(16u8u,  ushort, uchar, 16u8u_C1R)
+DEF_CVT_FUNC_F(16s8u,  short, uchar, 16s8u_C1R)
+DEF_CVT_FUNC_F(32s8u,  int, uchar, 32s8u_C1R)
+DEF_CVT_FUNC_F2(32f8u,  float, uchar, 32f8u_C1RSfs)
 DEF_CVT_FUNC(64f8u,  double, uchar)
 
-DEF_CVT_FUNC(8u8s,   uchar, schar)
-DEF_CVT_FUNC(16u8s,  ushort, schar)
-DEF_CVT_FUNC(16s8s,  short, schar)
-DEF_CVT_FUNC(32s8s,  int, schar)
-DEF_CVT_FUNC(32f8s,  float, schar)
+DEF_CVT_FUNC_F2(8u8s,   uchar, schar, 8u8s_C1RSfs)
+DEF_CVT_FUNC_F2(16u8s,  ushort, schar, 16u8s_C1RSfs)
+DEF_CVT_FUNC_F2(16s8s,  short, schar, 16s8s_C1RSfs)
+DEF_CVT_FUNC_F(32s8s,  int, schar, 32s8s_C1R)
+DEF_CVT_FUNC_F2(32f8s,  float, schar, 32f8s_C1RSfs)
 DEF_CVT_FUNC(64f8s,  double, schar)
 
-DEF_CVT_FUNC(8u16u,  uchar, ushort)
-DEF_CVT_FUNC(8s16u,  schar, ushort)
+DEF_CVT_FUNC_F(8u16u,  uchar, ushort, 8u16u_C1R)
+DEF_CVT_FUNC_F(8s16u,  schar, ushort, 8s16u_C1Rs)
 DEF_CPY_FUNC(16u,    ushort)
-DEF_CVT_FUNC(16s16u, short, ushort)
-DEF_CVT_FUNC(32s16u, int, ushort)
-DEF_CVT_FUNC(32f16u, float, ushort)
+DEF_CVT_FUNC_F(16s16u, short, ushort, 16s16u_C1Rs)
+DEF_CVT_FUNC_F2(32s16u, int, ushort, 32s16u_C1RSfs)
+DEF_CVT_FUNC_F2(32f16u, float, ushort, 32f16u_C1RSfs)
 DEF_CVT_FUNC(64f16u, double, ushort)
 
-DEF_CVT_FUNC(8u16s,  uchar, short)
-DEF_CVT_FUNC(8s16s,  schar, short)
-DEF_CVT_FUNC(16u16s, ushort, short)
-DEF_CVT_FUNC(32s16s, int, short)
-DEF_CVT_FUNC(32f16s, float, short)
+DEF_CVT_FUNC_F(8u16s,  uchar, short, 8u16s_C1R)
+DEF_CVT_FUNC_F(8s16s,  schar, short, 8s16s_C1R)
+DEF_CVT_FUNC_F2(16u16s, ushort, short, 16u16s_C1RSfs)
+DEF_CVT_FUNC_F2(32s16s, int, short, 32s16s_C1RSfs)
+DEF_CVT_FUNC_F2(32f16s, float, short, 32f16s_C1RSfs)
 DEF_CVT_FUNC(64f16s, double, short)
 
-DEF_CVT_FUNC(8u32s,  uchar, int)
-DEF_CVT_FUNC(8s32s,  schar, int)
-DEF_CVT_FUNC(16u32s, ushort, int)
-DEF_CVT_FUNC(16s32s, short, int)
+DEF_CVT_FUNC_F(8u32s,  uchar, int, 8u32s_C1R)
+DEF_CVT_FUNC_F(8s32s,  schar, int, 8s32s_C1R)
+DEF_CVT_FUNC_F(16u32s, ushort, int, 16u32s_C1R)
+DEF_CVT_FUNC_F(16s32s, short, int, 16s32s_C1R)
 DEF_CPY_FUNC(32s,    int)
-DEF_CVT_FUNC(32f32s, float, int)
+DEF_CVT_FUNC_F2(32f32s, float, int, 32f32s_C1RSfs)
 DEF_CVT_FUNC(64f32s, double, int)
 
-DEF_CVT_FUNC(8u32f,  uchar, float)
-DEF_CVT_FUNC(8s32f,  schar, float)
-DEF_CVT_FUNC(16u32f, ushort, float)
-DEF_CVT_FUNC(16s32f, short, float)
-DEF_CVT_FUNC(32s32f, int, float)
+DEF_CVT_FUNC_F(8u32f,  uchar, float, 8u32f_C1R)
+DEF_CVT_FUNC_F(8s32f,  schar, float, 8s32f_C1R)
+DEF_CVT_FUNC_F(16u32f, ushort, float, 16u32f_C1R)
+DEF_CVT_FUNC_F(16s32f, short, float, 16s32f_C1R)
+DEF_CVT_FUNC_F(32s32f, int, float, 32s32f_C1R)
 DEF_CVT_FUNC(64f32f, double, float)
 
 DEF_CVT_FUNC(8u64f,  uchar, double)
@@ -1310,7 +1357,8 @@ static BinaryFunc getConvertScaleFunc(int sdepth, int ddepth)
 
 static bool ocl_convertScaleAbs( InputArray _src, OutputArray _dst, double alpha, double beta )
 {
-    int type = _src.type(), depth = CV_MAT_DEPTH(type), cn = CV_MAT_CN(type);
+    int type = _src.type(), depth = CV_MAT_DEPTH(type), cn = CV_MAT_CN(type),
+        kercn = ocl::predictOptimalVectorWidth(_src, _dst);
     bool doubleSupport = ocl::Device::getDefault().doubleFPConfig() > 0;
 
     if (!doubleSupport && depth == CV_64F)
@@ -1319,27 +1367,31 @@ static bool ocl_convertScaleAbs( InputArray _src, OutputArray _dst, double alpha
     char cvt[2][50];
     int wdepth = std::max(depth, CV_32F);
     ocl::Kernel k("KF", ocl::core::arithm_oclsrc,
-                  format("-D OP_CONVERT_SCALE_ABS -D UNARY_OP -D dstT=uchar -D srcT1=%s"
-                         " -D workT=%s -D convertToWT1=%s -D convertToDT=%s%s",
-                         ocl::typeToStr(depth), ocl::typeToStr(wdepth),
-                         ocl::convertTypeStr(depth, wdepth, 1, cvt[0]),
-                         ocl::convertTypeStr(wdepth, CV_8U, 1, cvt[1]),
+                  format("-D OP_CONVERT_SCALE_ABS -D UNARY_OP -D dstT=%s -D srcT1=%s"
+                         " -D workT=%s -D wdepth=%d -D convertToWT1=%s -D convertToDT=%s -D workT1=%s%s",
+                         ocl::typeToStr(CV_8UC(kercn)),
+                         ocl::typeToStr(CV_MAKE_TYPE(depth, kercn)),
+                         ocl::typeToStr(CV_MAKE_TYPE(wdepth, kercn)), wdepth,
+                         ocl::convertTypeStr(depth, wdepth, kercn, cvt[0]),
+                         ocl::convertTypeStr(wdepth, CV_8U, kercn, cvt[1]),
+                         ocl::typeToStr(wdepth),
                          doubleSupport ? " -D DOUBLE_SUPPORT" : ""));
     if (k.empty())
         return false;
 
-    _dst.createSameSize(_src, CV_8UC(cn));
-    UMat src = _src.getUMat(), dst = _dst.getUMat();
+    UMat src = _src.getUMat();
+    _dst.create(src.size(), CV_8UC(cn));
+    UMat dst = _dst.getUMat();
 
     ocl::KernelArg srcarg = ocl::KernelArg::ReadOnlyNoSize(src),
-            dstarg = ocl::KernelArg::WriteOnly(dst, cn);
+            dstarg = ocl::KernelArg::WriteOnly(dst, cn, kercn);
 
     if (wdepth == CV_32F)
         k.args(srcarg, dstarg, (float)alpha, (float)beta);
     else if (wdepth == CV_64F)
         k.args(srcarg, dstarg, alpha, beta);
 
-    size_t globalsize[2] = { src.cols * cn, src.rows };
+    size_t globalsize[2] = { src.cols * cn / kercn, src.rows };
     return k.run(2, globalsize, NULL, false);
 }
 
@@ -1417,7 +1469,7 @@ void cv::Mat::convertTo(OutputArray _dst, int _type, double alpha, double beta) 
         Size sz((int)(it.size*cn), 1);
 
         for( size_t i = 0; i < it.nplanes; i++, ++it )
-            func(ptrs[0], 0, 0, 0, ptrs[1], 0, sz, scale);
+            func(ptrs[0], 1, 0, 0, ptrs[1], 1, sz, scale);
     }
 }
 
@@ -1492,19 +1544,14 @@ static LUTFunc lutTab[] =
 static bool ocl_LUT(InputArray _src, InputArray _lut, OutputArray _dst)
 {
     int dtype = _dst.type(), lcn = _lut.channels(), dcn = CV_MAT_CN(dtype), ddepth = CV_MAT_DEPTH(dtype);
-    bool doubleSupport = ocl::Device::getDefault().doubleFPConfig() > 0;
-
-    if (_src.dims() > 2 || (!doubleSupport && ddepth == CV_64F))
-        return false;
 
     UMat src = _src.getUMat(), lut = _lut.getUMat();
     _dst.create(src.size(), dtype);
     UMat dst = _dst.getUMat();
 
     ocl::Kernel k("LUT", ocl::core::lut_oclsrc,
-                  format("-D dcn=%d -D lcn=%d -D srcT=%s -D dstT=%s%s", dcn, lcn,
-                         ocl::typeToStr(src.depth()), ocl::typeToStr(ddepth),
-                         doubleSupport ? " -D DOUBLE_SUPPORT" : ""));
+                  format("-D dcn=%d -D lcn=%d -D srcT=%s -D dstT=%s", dcn, lcn,
+                         ocl::typeToStr(src.depth()), ocl::memopTypeToStr(ddepth)));
     if (k.empty())
         return false;
 
@@ -1528,7 +1575,7 @@ void cv::LUT( InputArray _src, InputArray _lut, OutputArray _dst )
         _lut.total() == 256 && _lut.isContinuous() &&
         (depth == CV_8U || depth == CV_8S) );
 
-    CV_OCL_RUN(_dst.isUMat(),
+    CV_OCL_RUN(_dst.isUMat() && _src.dims() <= 2,
                ocl_LUT(_src, _lut, _dst))
 
     Mat src = _src.getMat(), lut = _lut.getMat();

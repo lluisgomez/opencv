@@ -88,8 +88,10 @@ void UMatData::unlock()
 
 MatAllocator* UMat::getStdAllocator()
 {
-    if( ocl::haveOpenCL() )
+#ifdef HAVE_OPENCL
+    if( ocl::haveOpenCL() && ocl::useOpenCL() )
         return ocl::getOpenCLAllocator();
+#endif
     return Mat::getStdAllocator();
 }
 
@@ -665,7 +667,7 @@ void UMat::copyTo(OutputArray _dst, InputArray _mask) const
         copyTo(_dst);
         return;
     }
-
+#ifdef HAVE_OPENCL
     int cn = channels(), mtype = _mask.type(), mdepth = CV_MAT_DEPTH(mtype), mcn = CV_MAT_CN(mtype);
     CV_Assert( mdepth == CV_8U && (mcn == 1 || mcn == cn) );
 
@@ -692,7 +694,7 @@ void UMat::copyTo(OutputArray _dst, InputArray _mask) const
                 return;
         }
     }
-
+#endif
     Mat src = getMat(ACCESS_READ);
     src.copyTo(_dst, _mask);
 }
@@ -713,16 +715,20 @@ void UMat::convertTo(OutputArray _dst, int _type, double alpha, double beta) con
         copyTo(_dst);
         return;
     }
-
+#ifdef HAVE_OPENCL
     bool doubleSupport = ocl::Device::getDefault().doubleFPConfig() > 0;
     bool needDouble = sdepth == CV_64F || ddepth == CV_64F;
     if( dims <= 2 && cn && _dst.isUMat() && ocl::useOpenCL() &&
             ((needDouble && doubleSupport) || !needDouble) )
     {
-        char cvt[40];
+        int wdepth = std::max(CV_32F, sdepth);
+
+        char cvt[2][40];
         ocl::Kernel k("convertTo", ocl::core::convert_oclsrc,
-                      format("-D srcT=%s -D dstT=%s -D convertToDT=%s%s", ocl::typeToStr(sdepth),
-                             ocl::typeToStr(ddepth), ocl::convertTypeStr(CV_32F, ddepth, 1, cvt),
+                      format("-D srcT=%s -D WT=%s -D dstT=%s -D convertToWT=%s -D convertToDT=%s%s",
+                             ocl::typeToStr(sdepth), ocl::typeToStr(wdepth), ocl::typeToStr(ddepth),
+                             ocl::convertTypeStr(sdepth, wdepth, 1, cvt[0]),
+                             ocl::convertTypeStr(wdepth, ddepth, 1, cvt[1]),
                              doubleSupport ? " -D DOUBLE_SUPPORT" : ""));
         if (!k.empty())
         {
@@ -731,14 +737,20 @@ void UMat::convertTo(OutputArray _dst, int _type, double alpha, double beta) con
             UMat dst = _dst.getUMat();
 
             float alphaf = (float)alpha, betaf = (float)beta;
-            k.args(ocl::KernelArg::ReadOnlyNoSize(src), ocl::KernelArg::WriteOnly(dst, cn), alphaf, betaf);
+            ocl::KernelArg srcarg = ocl::KernelArg::ReadOnlyNoSize(src),
+                    dstarg = ocl::KernelArg::WriteOnly(dst, cn);
+
+            if (wdepth == CV_32F)
+                k.args(srcarg, dstarg, alphaf, betaf);
+            else
+                k.args(srcarg, dstarg, alpha, beta);
 
             size_t globalsize[2] = { dst.cols * cn, dst.rows };
             if (k.run(2, globalsize, NULL, false))
                 return;
         }
     }
-
+#endif
     Mat m = getMat(ACCESS_READ);
     m.convertTo(_dst, _type, alpha, beta);
 }
@@ -746,7 +758,9 @@ void UMat::convertTo(OutputArray _dst, int _type, double alpha, double beta) con
 UMat& UMat::setTo(InputArray _value, InputArray _mask)
 {
     bool haveMask = !_mask.empty();
+#ifdef HAVE_OPENCL
     int tp = type(), cn = CV_MAT_CN(tp);
+
     if( dims <= 2 && cn <= 4 && CV_MAT_DEPTH(tp) < CV_64F && ocl::useOpenCL() )
     {
         Mat value = _value.getMat();
@@ -763,7 +777,7 @@ UMat& UMat::setTo(InputArray _value, InputArray _mask)
         ocl::Kernel setK(haveMask ? "setMask" : "set", ocl::core::copyset_oclsrc, opts);
         if( !setK.empty() )
         {
-            ocl::KernelArg scalararg(0, 0, 0, buf, CV_ELEM_SIZE1(tp)*scalarcn);
+            ocl::KernelArg scalararg(0, 0, 0, 0, buf, CV_ELEM_SIZE1(tp)*scalarcn);
             UMat mask;
 
             if( haveMask )
@@ -785,6 +799,7 @@ UMat& UMat::setTo(InputArray _value, InputArray _mask)
                 return *this;
         }
     }
+#endif
     Mat m = getMat(haveMask ? ACCESS_RW : ACCESS_WRITE);
     m.setTo(_value, _mask);
     return *this;
@@ -838,8 +853,8 @@ static bool ocl_dot( InputArray _src1, InputArray _src2, double & res )
 
     char cvt[40];
     ocl::Kernel k("reduce", ocl::core::reduce_oclsrc,
-                  format("-D srcT=%s -D dstT=%s -D convertToDT=%s -D OP_DOT -D WGS=%d -D WGS2_ALIGNED=%d%s",
-                         ocl::typeToStr(depth), ocl::typeToStr(ddepth), ocl::convertTypeStr(depth, ddepth, 1, cvt),
+                  format("-D srcT=%s -D dstT=%s -D ddepth=%d -D convertToDT=%s -D OP_DOT -D WGS=%d -D WGS2_ALIGNED=%d%s",
+                         ocl::typeToStr(depth), ocl::typeToStr(ddepth), ddepth, ocl::convertTypeStr(depth, ddepth, 1, cvt),
                          (int)wgs, wgs2_aligned, doubleSupport ? " -D DOUBLE_SUPPORT" : ""));
     if (k.empty())
         return false;

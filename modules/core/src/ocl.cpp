@@ -882,7 +882,6 @@ OCL_FUNC_P(cl_mem, clCreateImage2D,
     cl_int *errcode_ret),
     (context, flags, image_format, image_width, image_height, image_row_pitch, host_ptr, errcode_ret))
 
-/*
 OCL_FUNC(cl_int, clGetSupportedImageFormats,
  (cl_context context,
  cl_mem_flags flags,
@@ -892,6 +891,7 @@ OCL_FUNC(cl_int, clGetSupportedImageFormats,
  cl_uint * num_image_formats),
  (context, flags, image_type, num_entries, image_formats, num_image_formats))
 
+/*
 OCL_FUNC(cl_int, clGetMemObjectInfo,
  (cl_mem memobj,
  cl_mem_info param_name,
@@ -1410,7 +1410,7 @@ bool useOpenCL()
 {
     CoreTLSData* data = coreTlsData.get();
     if( data->useOpenCL < 0 )
-        data->useOpenCL = (int)haveOpenCL();
+        data->useOpenCL = (int)haveOpenCL() && Device::getDefault().ptr() != NULL;
     return data->useOpenCL > 0;
 }
 
@@ -1419,7 +1419,7 @@ void setUseOpenCL(bool flag)
     if( haveOpenCL() )
     {
         CoreTLSData* data = coreTlsData.get();
-        data->useOpenCL = flag ? 1 : 0;
+        data->useOpenCL = (flag && Device::getDefault().ptr() != NULL) ? 1 : 0;
     }
 }
 
@@ -1581,7 +1581,7 @@ void finish()
 
 #define IMPLEMENT_REFCOUNTABLE() \
     void addref() { CV_XADD(&refcount, 1); } \
-    void release() { if( CV_XADD(&refcount, -1) == 1 ) delete this; } \
+    void release() { if( CV_XADD(&refcount, -1) == 1 && !cv::__termination) delete this; } \
     int refcount
 
 /////////////////////////////////////////// Platform /////////////////////////////////////////////
@@ -1712,6 +1712,17 @@ struct Device::Impl
 
         String deviceVersion_ = getStrProp(CL_DEVICE_VERSION);
         parseDeviceVersion(deviceVersion_, deviceVersionMajor_, deviceVersionMinor_);
+
+        vendorName_ = getStrProp(CL_DEVICE_VENDOR);
+        if (vendorName_ == "Advanced Micro Devices, Inc." ||
+            vendorName_ == "AMD")
+            vendorID_ = VENDOR_AMD;
+        else if (vendorName_ == "Intel(R) Corporation")
+            vendorID_ = VENDOR_INTEL;
+        else if (vendorName_ == "NVIDIA Corporation")
+            vendorID_ = VENDOR_NVIDIA;
+        else
+            vendorID_ = UNKNOWN_VENDOR;
     }
 
     template<typename _TpCL, typename _TpOut>
@@ -1754,6 +1765,8 @@ struct Device::Impl
     int deviceVersionMajor_;
     int deviceVersionMinor_;
     String driverVersion_;
+    String vendorName_;
+    int vendorID_;
 };
 
 
@@ -1813,8 +1826,11 @@ String Device::extensions() const
 String Device::version() const
 { return p ? p->version_ : String(); }
 
-String Device::vendor() const
-{ return p ? p->getStrProp(CL_DEVICE_VENDOR) : String(); }
+String Device::vendorName() const
+{ return p ? p->vendorName_ : String(); }
+
+int Device::vendorID() const
+{ return p ? p->vendorID_ : 0; }
 
 String Device::OpenCL_C_Version() const
 { return p ? p->getStrProp(CL_DEVICE_OPENCL_C_VERSION) : String(); }
@@ -1895,6 +1911,38 @@ bool Device::hostUnifiedMemory() const
 
 bool Device::imageSupport() const
 { return p ? p->getBoolProp(CL_DEVICE_IMAGE_SUPPORT) : false; }
+
+bool Device::imageFromBufferSupport() const
+{
+    bool ret = false;
+    if (p)
+    {
+        size_t pos = p->getStrProp(CL_DEVICE_EXTENSIONS).find("cl_khr_image2d_from_buffer");
+        if (pos != String::npos)
+        {
+            ret = true;
+        }
+    }
+    return ret;
+}
+
+uint Device::imagePitchAlignment() const
+{
+#ifdef CL_DEVICE_IMAGE_PITCH_ALIGNMENT
+    return p ? p->getProp<cl_uint, uint>(CL_DEVICE_IMAGE_PITCH_ALIGNMENT) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint Device::imageBaseAddressAlignment() const
+{
+#ifdef CL_DEVICE_IMAGE_BASE_ADDRESS_ALIGNMENT
+    return p ? p->getProp<cl_uint, uint>(CL_DEVICE_IMAGE_BASE_ADDRESS_ALIGNMENT) : 0;
+#else
+    return 0;
+#endif
+}
 
 size_t Device::image2DMaxWidth() const
 { return p ? p->getProp<size_t, size_t>(CL_DEVICE_IMAGE2D_MAX_WIDTH) : 0; }
@@ -2163,7 +2211,6 @@ static cl_device_id selectOpenCLDevice()
             goto not_found;
         }
     }
-
     if (deviceTypes.size() == 0)
     {
         if (!isID)
@@ -2177,13 +2224,16 @@ static cl_device_id selectOpenCLDevice()
     for (size_t t = 0; t < deviceTypes.size(); t++)
     {
         int deviceType = 0;
-        if (deviceTypes[t] == "GPU")
+        std::string tempStrDeviceType = deviceTypes[t];
+        std::transform( tempStrDeviceType.begin(), tempStrDeviceType.end(), tempStrDeviceType.begin(), tolower );
+
+        if (tempStrDeviceType == "gpu" || tempStrDeviceType == "dgpu" || tempStrDeviceType == "igpu")
             deviceType = Device::TYPE_GPU;
-        else if (deviceTypes[t] == "CPU")
+        else if (tempStrDeviceType == "cpu")
             deviceType = Device::TYPE_CPU;
-        else if (deviceTypes[t] == "ACCELERATOR")
+        else if (tempStrDeviceType == "accelerator")
             deviceType = Device::TYPE_ACCELERATOR;
-        else if (deviceTypes[t] == "ALL")
+        else if (tempStrDeviceType == "all")
             deviceType = Device::TYPE_ALL;
         else
         {
@@ -2213,7 +2263,14 @@ static cl_device_id selectOpenCLDevice()
         {
             std::string name;
             CV_OclDbgAssert(getStringInfo(clGetDeviceInfo, devices[i], CL_DEVICE_NAME, name) == CL_SUCCESS);
-            if (isID || name.find(deviceName) != std::string::npos)
+            cl_bool useGPU = true;
+            if(tempStrDeviceType == "dgpu" || tempStrDeviceType == "igpu")
+            {
+                cl_bool isIGPU = CL_FALSE;
+                clGetDeviceInfo(devices[i], CL_DEVICE_HOST_UNIFIED_MEMORY, sizeof(isIGPU), &isIGPU, NULL);
+                useGPU = tempStrDeviceType == "dgpu" ? !isIGPU : isIGPU;
+            }
+            if ( (isID || name.find(deviceName) != std::string::npos) && useGPU)
             {
                 // TODO check for OpenCL 1.1
                 return devices[i];
@@ -2229,6 +2286,7 @@ not_found:
         std::cerr << deviceTypes[t] << " ";
 
     std::cerr << std::endl << "    Device name: " << (deviceName.length() == 0 ? "any" : deviceName) << std::endl;
+    CV_Error(CL_INVALID_DEVICE, "Requested OpenCL device is not found");
     return NULL;
 }
 
@@ -2460,23 +2518,23 @@ const Device& Context::device(size_t idx) const
 
 Context& Context::getDefault(bool initialize)
 {
-    static Context ctx;
-    if(!ctx.p && haveOpenCL())
+    static Context* ctx = new Context();
+    if(!ctx->p && haveOpenCL())
     {
-        if (!ctx.p)
-            ctx.p = new Impl();
+        if (!ctx->p)
+            ctx->p = new Impl();
         if (initialize)
         {
             // do not create new Context right away.
             // First, try to retrieve existing context of the same type.
             // In its turn, Platform::getContext() may call Context::create()
             // if there is no such context.
-            if (ctx.p->handle == NULL)
-                ctx.p->setDefault();
+            if (ctx->p->handle == NULL)
+                ctx->p->setDefault();
         }
     }
 
-    return ctx;
+    return *ctx;
 }
 
 Program Context::getProg(const ProgramSource& prog,
@@ -2624,19 +2682,19 @@ static cl_command_queue getQueue(const Queue& q)
 /////////////////////////////////////////// KernelArg /////////////////////////////////////////////
 
 KernelArg::KernelArg()
-    : flags(0), m(0), obj(0), sz(0), wscale(1)
+    : flags(0), m(0), obj(0), sz(0), wscale(1), iwscale(1)
 {
 }
 
-KernelArg::KernelArg(int _flags, UMat* _m, int _wscale, const void* _obj, size_t _sz)
-    : flags(_flags), m(_m), obj(_obj), sz(_sz), wscale(_wscale)
+KernelArg::KernelArg(int _flags, UMat* _m, int _wscale, int _iwscale, const void* _obj, size_t _sz)
+    : flags(_flags), m(_m), obj(_obj), sz(_sz), wscale(_wscale), iwscale(_iwscale)
 {
 }
 
 KernelArg KernelArg::Constant(const Mat& m)
 {
     CV_Assert(m.isContinuous());
-    return KernelArg(CONSTANT, 0, 1, m.data, m.total()*m.elemSize());
+    return KernelArg(CONSTANT, 0, 0, 0, m.data, m.total()*m.elemSize());
 }
 
 /////////////////////////////////////////// Kernel /////////////////////////////////////////////
@@ -2679,9 +2737,15 @@ struct Kernel::Impl
             haveTempDstUMats = true;
     }
 
+    void addImage(const Image2D& image)
+    {
+        images.push_back(image);
+    }
+
     void finit()
     {
         cleanupUMats();
+        images.clear();
         if(e) { clReleaseEvent(e); e = 0; }
         release();
     }
@@ -2699,6 +2763,7 @@ struct Kernel::Impl
     enum { MAX_ARRS = 16 };
     UMatData* u[MAX_ARRS];
     int nu;
+    std::list<Image2D> images;
     bool haveTempDstUMats;
 };
 
@@ -2798,7 +2863,8 @@ int Kernel::set(int i, const void* value, size_t sz)
 {
     if (!p || !p->handle)
         return -1;
-    CV_Assert(i >= 0);
+    if (i < 0)
+        return i;
     if( i == 0 )
         p->cleanupUMats();
 
@@ -2811,6 +2877,7 @@ int Kernel::set(int i, const void* value, size_t sz)
 
 int Kernel::set(int i, const Image2D& image2D)
 {
+    p->addImage(image2D);
     cl_mem h = (cl_mem)image2D.ptr();
     return set(i, &h, sizeof(h));
 }
@@ -2824,7 +2891,8 @@ int Kernel::set(int i, const KernelArg& arg)
 {
     if( !p || !p->handle )
         return -1;
-    CV_Assert( i >= 0 );
+    if (i < 0)
+        return i;
     if( i == 0 )
         p->cleanupUMats();
     if( arg.m )
@@ -2853,7 +2921,7 @@ int Kernel::set(int i, const KernelArg& arg)
 
             if( !(arg.flags & KernelArg::NO_SIZE) )
             {
-                int cols = u2d.cols*arg.wscale;
+                int cols = u2d.cols*arg.wscale/arg.iwscale;
                 CV_OclDbgAssert(clSetKernelArg(p->handle, (cl_uint)i, sizeof(u2d.rows), &u2d.rows) == CL_SUCCESS);
                 CV_OclDbgAssert(clSetKernelArg(p->handle, (cl_uint)(i+1), sizeof(cols), &cols) == CL_SUCCESS);
                 i += 2;
@@ -2869,7 +2937,7 @@ int Kernel::set(int i, const KernelArg& arg)
             i += 4;
             if( !(arg.flags & KernelArg::NO_SIZE) )
             {
-                int cols = u3d.cols*arg.wscale;
+                int cols = u3d.cols*arg.wscale/arg.iwscale;
                 CV_OclDbgAssert(clSetKernelArg(p->handle, (cl_uint)i, sizeof(u3d.slices), &u3d.rows) == CL_SUCCESS);
                 CV_OclDbgAssert(clSetKernelArg(p->handle, (cl_uint)(i+1), sizeof(u3d.rows), &u3d.rows) == CL_SUCCESS);
                 CV_OclDbgAssert(clSetKernelArg(p->handle, (cl_uint)(i+2), sizeof(u3d.cols), &cols) == CL_SUCCESS);
@@ -2897,7 +2965,7 @@ bool Kernel::run(int dims, size_t _globalsize[], size_t _localsize[],
     for (int i = 0; i < dims; i++)
     {
         size_t val = _localsize ? _localsize[i] :
-            dims == 1 ? 64 : dims == 2 ? (16>>i) : dims == 3 ? (8>>(int)(i>0)) : 1;
+            dims == 1 ? 64 : dims == 2 ? (i == 0 ? 256 : 8) : dims == 3 ? (8>>(int)(i>0)) : 1;
         CV_Assert( val > 0 );
         total *= _globalsize[i];
         globalsize[i] = ((_globalsize[i] + val - 1)/val)*val;
@@ -3009,6 +3077,12 @@ struct Program::Impl
             for( i = 0; i < n; i++ )
                 deviceList[i] = ctx.device(i).ptr();
 
+            Device device = Device::getDefault();
+            if (device.isAMD())
+                buildflags += " -D AMD_DEVICE";
+            else if (device.isIntel())
+                buildflags += " -D INTEL_DEVICE";
+
             retval = clBuildProgram(handle, n,
                                     (const cl_device_id*)deviceList,
                                     buildflags.c_str(), 0, 0);
@@ -3098,7 +3172,12 @@ struct Program::Impl
     {
         if( handle )
         {
-            clReleaseProgram(handle);
+#ifdef _WIN32
+            if (!cv::__termination)
+#endif
+            {
+                clReleaseProgram(handle);
+            }
             handle = NULL;
         }
     }
@@ -3759,11 +3838,16 @@ public:
 
         cl_command_queue q = (cl_command_queue)Queue::getDefault().ptr();
 
-        if( u->refcount == 0 )
+        // FIXIT Workaround for UMat synchronization issue
+        // if( u->refcount == 0 )
         {
             if( !u->copyOnMap() )
             {
-                CV_Assert(u->data == 0);
+                if (u->data) // FIXIT Workaround for UMat synchronization issue
+                {
+                    //CV_Assert(u->hostCopyObsolete() == false);
+                    return;
+                }
                 // because there can be other map requests for the same UMat with different access flags,
                 // we use the universal (read-write) access mode.
                 cl_int retval = 0;
@@ -3804,6 +3888,10 @@ public:
         CV_Assert(u->handle != 0);
 
         UMatDataAutoLock autolock(u);
+
+        // FIXIT Workaround for UMat synchronization issue
+        if(u->refcount > 0)
+            return;
 
         cl_command_queue q = (cl_command_queue)Queue::getDefault().ptr();
         cl_int retval = 0;
@@ -4195,34 +4283,34 @@ const char* typeToStr(int type)
 {
     static const char* tab[]=
     {
-        "uchar", "uchar2", "uchar3", "uchar4",
-        "char", "char2", "char3", "char4",
-        "ushort", "ushort2", "ushort3", "ushort4",
-        "short", "short2", "short3", "short4",
-        "int", "int2", "int3", "int4",
-        "float", "float2", "float3", "float4",
-        "double", "double2", "double3", "double4",
-        "?", "?", "?", "?"
+        "uchar", "uchar2", "uchar3", "uchar4", 0, 0, 0, "uchar8", 0, 0, 0, 0, 0, 0, 0, "uchar16",
+        "char", "char2", "char3", "char4", 0, 0, 0, "char8", 0, 0, 0, 0, 0, 0, 0, "char16",
+        "ushort", "ushort2", "ushort3", "ushort4",0, 0, 0, "ushort8", 0, 0, 0, 0, 0, 0, 0, "ushort16",
+        "short", "short2", "short3", "short4", 0, 0, 0, "short8", 0, 0, 0, 0, 0, 0, 0, "short16",
+        "int", "int2", "int3", "int4", 0, 0, 0, "int8", 0, 0, 0, 0, 0, 0, 0, "int16",
+        "float", "float2", "float3", "float4", 0, 0, 0, "float8", 0, 0, 0, 0, 0, 0, 0, "float16",
+        "double", "double2", "double3", "double4", 0, 0, 0, "double8", 0, 0, 0, 0, 0, 0, 0, "double16",
+        "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?"
     };
     int cn = CV_MAT_CN(type), depth = CV_MAT_DEPTH(type);
-    return cn > 4 ? "?" : tab[depth*4 + cn-1];
+    return cn > 16 ? "?" : tab[depth*16 + cn-1];
 }
 
 const char* memopTypeToStr(int type)
 {
     static const char* tab[] =
     {
-        "uchar", "uchar2", "uchar3", "uchar4",
-        "uchar", "uchar2", "uchar3", "uchar4",
-        "ushort", "ushort2", "ushort3", "ushort4",
-        "ushort", "ushort2", "ushort3", "ushort4",
-        "int", "int2", "int3", "int4",
-        "int", "int2", "int3", "int4",
-        "ulong", "ulong2", "ulong3", "ulong4",
-        "?", "?", "?", "?"
+        "uchar", "uchar2", "uchar3", "uchar4", 0, 0, 0, "uchar8", 0, 0, 0, 0, 0, 0, 0, "uchar16",
+        "char", "char2", "char3", "char4", 0, 0, 0, "char8", 0, 0, 0, 0, 0, 0, 0, "char16",
+        "ushort", "ushort2", "ushort3", "ushort4",0, 0, 0, "ushort8", 0, 0, 0, 0, 0, 0, 0, "ushort16",
+        "short", "short2", "short3", "short4", 0, 0, 0, "short8", 0, 0, 0, 0, 0, 0, 0, "short16",
+        "int", "int2", "int3", "int4", 0, 0, 0, "int8", 0, 0, 0, 0, 0, 0, 0, "int16",
+        "int", "int2", "int3", "int4", 0, 0, 0, "int8", 0, 0, 0, 0, 0, 0, 0, "int16",
+        "ulong", "ulong2", "ulong3", "ulong4", 0, 0, 0, "ulong8", 0, 0, 0, 0, 0, 0, 0, "ulong16",
+        "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?", "?"
     };
     int cn = CV_MAT_CN(type), depth = CV_MAT_DEPTH(type);
-    return cn > 4 ? "?" : tab[depth*4 + cn-1];
+    return cn > 16 ? "?" : tab[depth*16 + cn-1];
 }
 
 const char* convertTypeStr(int sdepth, int ddepth, int cn, char* buf)
@@ -4277,7 +4365,7 @@ static std::string kerToStr(const Mat & k)
     return stream.str();
 }
 
-String kernelToStr(InputArray _kernel, int ddepth)
+String kernelToStr(InputArray _kernel, int ddepth, const char * name)
 {
     Mat kernel = _kernel.getMat().reshape(1, 1);
 
@@ -4288,24 +4376,109 @@ String kernelToStr(InputArray _kernel, int ddepth)
     if (ddepth != depth)
         kernel.convertTo(kernel, ddepth);
 
-    typedef std::string (*func_t)(const Mat &);
-    static const func_t funcs[] = { kerToStr<uchar>, kerToStr<char>, kerToStr<ushort>,kerToStr<short>,
+    typedef std::string (* func_t)(const Mat &);
+    static const func_t funcs[] = { kerToStr<uchar>, kerToStr<char>, kerToStr<ushort>, kerToStr<short>,
                                     kerToStr<int>, kerToStr<float>, kerToStr<double>, 0 };
     const func_t func = funcs[depth];
     CV_Assert(func != 0);
 
-    return cv::format(" -D COEFF=%s", func(kernel).c_str());
+    return cv::format(" -D %s=%s", name ? name : "COEFF", func(kernel).c_str());
 }
 
-/////////////////////////////////////////// Image2D ////////////////////////////////////////////////////
+#define PROCESS_SRC(src) \
+    do \
+    { \
+        if (!src.empty()) \
+        { \
+            CV_Assert(src.isMat() || src.isUMat()); \
+            int ctype = src.type(), ccn = CV_MAT_CN(ctype); \
+            Size csize = src.size(); \
+            cols.push_back(ccn * src.size().width); \
+            if (ctype != type || csize != ssize) \
+                return 1; \
+            offsets.push_back(src.offset()); \
+            steps.push_back(src.step()); \
+        } \
+    } \
+    while ((void)0, 0)
+
+int predictOptimalVectorWidth(InputArray src1, InputArray src2, InputArray src3,
+                              InputArray src4, InputArray src5, InputArray src6,
+                              InputArray src7, InputArray src8, InputArray src9)
+{
+    int type = src1.type(), depth = CV_MAT_DEPTH(type), cn = CV_MAT_CN(type), esz = CV_ELEM_SIZE(depth);
+    Size ssize = src1.size();
+    const ocl::Device & d = ocl::Device::getDefault();
+
+    int vectorWidths[] = { d.preferredVectorWidthChar(), d.preferredVectorWidthChar(),
+        d.preferredVectorWidthShort(), d.preferredVectorWidthShort(),
+        d.preferredVectorWidthInt(), d.preferredVectorWidthFloat(),
+        d.preferredVectorWidthDouble(), -1 }, width = vectorWidths[depth];
+
+    if (ssize.width * cn < width || width <= 0)
+        return 1;
+
+    std::vector<size_t> offsets, steps, cols;
+    PROCESS_SRC(src1);
+    PROCESS_SRC(src2);
+    PROCESS_SRC(src3);
+    PROCESS_SRC(src4);
+    PROCESS_SRC(src5);
+    PROCESS_SRC(src6);
+    PROCESS_SRC(src7);
+    PROCESS_SRC(src8);
+    PROCESS_SRC(src9);
+
+    size_t size = offsets.size();
+    int wsz = width * esz;
+    std::vector<int> dividers(size, wsz);
+
+    for (size_t i = 0; i < size; ++i)
+        while (offsets[i] % dividers[i] != 0 || steps[i] % dividers[i] != 0 || cols[i] % dividers[i] != 0)
+            dividers[i] >>= 1;
+
+    // default strategy
+    for (size_t i = 0; i < size; ++i)
+        if (dividers[i] != wsz)
+        {
+            width = 1;
+            break;
+        }
+
+    // another strategy
+//    width = *std::min_element(dividers.begin(), dividers.end());
+
+    return width;
+}
+
+#undef PROCESS_SRC
+
+
+// TODO Make this as a method of OpenCL "BuildOptions" class
+void buildOptionsAddMatrixDescription(String& buildOptions, const String& name, InputArray _m)
+{
+    if (!buildOptions.empty())
+        buildOptions += " ";
+    int type = _m.type(), depth = CV_MAT_DEPTH(type);
+    buildOptions += format(
+            "-D %s_T=%s -D %s_T1=%s -D %s_CN=%d -D %s_TSIZE=%d -D %s_T1SIZE=%d -D %s_DEPTH=%d",
+            name.c_str(), ocl::typeToStr(type),
+            name.c_str(), ocl::typeToStr(CV_MAKE_TYPE(depth, 1)),
+            name.c_str(), (int)CV_MAT_CN(type),
+            name.c_str(), (int)CV_ELEM_SIZE(type),
+            name.c_str(), (int)CV_ELEM_SIZE1(type),
+            name.c_str(), (int)depth
+            );
+}
+
 
 struct Image2D::Impl
 {
-    Impl(const UMat &src)
+    Impl(const UMat &src, bool norm, bool alias)
     {
         handle = 0;
         refcount = 1;
-        init(src);
+        init(src, norm, alias);
     }
 
     ~Impl()
@@ -4314,24 +4487,55 @@ struct Image2D::Impl
             clReleaseMemObject(handle);
     }
 
-    void init(const UMat &src)
+    static cl_image_format getImageFormat(int depth, int cn, bool norm)
+    {
+        cl_image_format format;
+        static const int channelTypes[] = { CL_UNSIGNED_INT8, CL_SIGNED_INT8, CL_UNSIGNED_INT16,
+                                       CL_SIGNED_INT16, CL_SIGNED_INT32, CL_FLOAT, -1, -1 };
+        static const int channelTypesNorm[] = { CL_UNORM_INT8, CL_SNORM_INT8, CL_UNORM_INT16,
+                                                CL_SNORM_INT16, -1, -1, -1, -1 };
+        static const int channelOrders[] = { -1, CL_R, CL_RG, -1, CL_RGBA };
+
+        int channelType = norm ? channelTypesNorm[depth] : channelTypes[depth];
+        int channelOrder = channelOrders[cn];
+        format.image_channel_data_type = (cl_channel_type)channelType;
+        format.image_channel_order = (cl_channel_order)channelOrder;
+        return format;
+    }
+
+    static bool isFormatSupported(cl_image_format format)
+    {
+        cl_context context = (cl_context)Context::getDefault().ptr();
+        // Figure out how many formats are supported by this context.
+        cl_uint numFormats = 0;
+        cl_int err = clGetSupportedImageFormats(context, CL_MEM_READ_WRITE,
+                                                CL_MEM_OBJECT_IMAGE2D, numFormats,
+                                                NULL, &numFormats);
+        AutoBuffer<cl_image_format> formats(numFormats);
+        err = clGetSupportedImageFormats(context, CL_MEM_READ_WRITE,
+                                         CL_MEM_OBJECT_IMAGE2D, numFormats,
+                                         formats, NULL);
+        CV_OclDbgAssert(err == CL_SUCCESS);
+        for (cl_uint i = 0; i < numFormats; ++i)
+        {
+            if (!memcmp(&formats[i], &format, sizeof(format)))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void init(const UMat &src, bool norm, bool alias)
     {
         CV_Assert(ocl::Device::getDefault().imageSupport());
 
-        cl_image_format format;
         int err, depth = src.depth(), cn = src.channels();
         CV_Assert(cn <= 4);
+        cl_image_format format = getImageFormat(depth, cn, norm);
 
-        static const int channelTypes[] = { CL_UNSIGNED_INT8, CL_SIGNED_INT8, CL_UNSIGNED_INT16,
-                                       CL_SIGNED_INT16, CL_SIGNED_INT32, CL_FLOAT, -1, -1 };
-        static const int channelOrders[] = { -1, CL_R, CL_RG, -1, CL_RGBA };
-
-        int channelType = channelTypes[depth], channelOrder = channelOrders[cn];
-        if (channelType < 0 || channelOrder < 0)
+        if (!isFormatSupported(format))
             CV_Error(Error::OpenCLApiCallError, "Image format is not supported");
-
-        format.image_channel_data_type = (cl_channel_type)channelType;
-        format.image_channel_order = (cl_channel_order)channelOrder;
 
         cl_context context = (cl_context)Context::getDefault().ptr();
         cl_command_queue queue = (cl_command_queue)Queue::getDefault().ptr();
@@ -4341,6 +4545,7 @@ struct Image2D::Impl
         // run on OpenCL 1.1 platform if library binaries are compiled with OpenCL 1.2 support
         const Device & d = ocl::Device::getDefault();
         int minor = d.deviceVersionMinor(), major = d.deviceVersionMajor();
+        CV_Assert(!alias || canCreateAlias(src));
         if (1 < major || (1 == major && 2 <= minor))
         {
             cl_image_desc desc;
@@ -4349,9 +4554,9 @@ struct Image2D::Impl
             desc.image_height     = src.rows;
             desc.image_depth      = 0;
             desc.image_array_size = 1;
-            desc.image_row_pitch  = 0;
+            desc.image_row_pitch  = alias ? src.step[0] : 0;
             desc.image_slice_pitch = 0;
-            desc.buffer           = NULL;
+            desc.buffer           = alias ? (cl_mem)src.handle(ACCESS_RW) : 0;
             desc.num_mip_levels   = 0;
             desc.num_samples      = 0;
             handle = clCreateImage(context, CL_MEM_READ_WRITE, &format, &desc, NULL, &err);
@@ -4359,7 +4564,10 @@ struct Image2D::Impl
         else
 #endif
         {
+            CV_SUPPRESS_DEPRECATED_START
+            CV_Assert(!alias);  // This is an OpenCL 1.2 extension
             handle = clCreateImage2D(context, CL_MEM_READ_WRITE, &format, src.cols, src.rows, 0, NULL, &err);
+            CV_SUPPRESS_DEPRECATED_END
         }
         CV_OclDbgAssert(err == CL_SUCCESS);
 
@@ -4367,7 +4575,7 @@ struct Image2D::Impl
         size_t region[] = { src.cols, src.rows, 1 };
 
         cl_mem devData;
-        if (!src.isContinuous())
+        if (!alias && !src.isContinuous())
         {
             devData = clCreateBuffer(context, CL_MEM_READ_ONLY, src.cols * src.rows * src.elemSize(), NULL, &err);
             CV_OclDbgAssert(err == CL_SUCCESS);
@@ -4378,14 +4586,19 @@ struct Image2D::Impl
             CV_OclDbgAssert(clFlush(queue) == CL_SUCCESS);
         }
         else
+        {
             devData = (cl_mem)src.handle(ACCESS_READ);
+        }
         CV_Assert(devData != NULL);
 
-        CV_OclDbgAssert(clEnqueueCopyBufferToImage(queue, devData, handle, 0, origin, region, 0, NULL, 0) == CL_SUCCESS);
-        if (!src.isContinuous())
+        if (!alias)
         {
-            CV_OclDbgAssert(clFlush(queue) == CL_SUCCESS);
-            CV_OclDbgAssert(clReleaseMemObject(devData) == CL_SUCCESS);
+            CV_OclDbgAssert(clEnqueueCopyBufferToImage(queue, devData, handle, 0, origin, region, 0, NULL, 0) == CL_SUCCESS);
+            if (!src.isContinuous())
+            {
+                CV_OclDbgAssert(clFlush(queue) == CL_SUCCESS);
+                CV_OclDbgAssert(clReleaseMemObject(devData) == CL_SUCCESS);
+            }
         }
     }
 
@@ -4399,9 +4612,37 @@ Image2D::Image2D()
     p = NULL;
 }
 
-Image2D::Image2D(const UMat &src)
+Image2D::Image2D(const UMat &src, bool norm, bool alias)
 {
-    p = new Impl(src);
+    p = new Impl(src, norm, alias);
+}
+
+bool Image2D::canCreateAlias(const UMat &m)
+{
+    bool ret = false;
+    const Device & d = ocl::Device::getDefault();
+    if (d.imageFromBufferSupport())
+    {
+        // This is the required pitch alignment in pixels
+        uint pitchAlign = d.imagePitchAlignment();
+        if (pitchAlign && !(m.step % (pitchAlign * m.elemSize())))
+        {
+            // We don't currently handle the case where the buffer was created
+            // with CL_MEM_USE_HOST_PTR
+            if (!m.u->tempUMat())
+            {
+                ret = true;
+            }
+        }
+    }
+    return ret;
+}
+
+bool Image2D::isFormatSupported(int depth, int cn, bool norm)
+{
+    cl_image_format format = Impl::getImageFormat(depth, cn, norm);
+
+    return Impl::isFormatSupported(format);
 }
 
 Image2D::Image2D(const Image2D & i)

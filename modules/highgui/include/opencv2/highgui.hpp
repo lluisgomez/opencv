@@ -215,12 +215,14 @@ enum { IMREAD_UNCHANGED  = -1, // 8bit, color or not
        IMREAD_ANYCOLOR   = 4   // ?, any color
      };
 
-enum { IMWRITE_JPEG_QUALITY    = 1,
-       IMWRITE_PNG_COMPRESSION = 16,
-       IMWRITE_PNG_STRATEGY    = 17,
-       IMWRITE_PNG_BILEVEL     = 18,
-       IMWRITE_PXM_BINARY      = 32,
-       IMWRITE_WEBP_QUALITY    = 64
+enum { IMWRITE_JPEG_QUALITY     = 1,
+       IMWRITE_JPEG_PROGRESSIVE = 2,
+       IMWRITE_JPEG_OPTIMIZE    = 3,
+       IMWRITE_PNG_COMPRESSION  = 16,
+       IMWRITE_PNG_STRATEGY     = 17,
+       IMWRITE_PNG_BILEVEL      = 18,
+       IMWRITE_PXM_BINARY       = 32,
+       IMWRITE_WEBP_QUALITY     = 64
      };
 
 enum { IMWRITE_PNG_STRATEGY_DEFAULT      = 0,
@@ -530,6 +532,8 @@ enum { CAP_INTELPERC_DEPTH_MAP              = 0, // Each pixel is a 16-bit integ
        CAP_INTELPERC_IMAGE                  = 3
      };
 
+
+class IVideoCapture;
 class CV_EXPORTS_W VideoCapture
 {
 public:
@@ -554,8 +558,10 @@ public:
 
 protected:
     Ptr<CvCapture> cap;
+    Ptr<IVideoCapture> icap;
+private:
+    static Ptr<IVideoCapture> createCameraCapture(int index);
 };
-
 
 class CV_EXPORTS_W VideoWriter
 {

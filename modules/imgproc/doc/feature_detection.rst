@@ -1,4 +1,4 @@
-Feature Detection
+﻿Feature Detection
 =================
 
 .. highlight:: cpp
@@ -15,9 +15,9 @@ Finds edges in an image using the [Canny86]_ algorithm.
 
 .. ocv:cfunction:: void cvCanny( const CvArr* image, CvArr* edges, double threshold1, double threshold2, int aperture_size=3 )
 
-    :param image: single-channel 8-bit input image.
+    :param image: 8-bit input image.
 
-    :param edges: output edge map; it has the same size and type as  ``image`` .
+    :param edges: output edge map; single channels 8-bit image, which has the same size as  ``image`` .
 
     :param threshold1: first threshold for the hysteresis procedure.
 
@@ -97,7 +97,7 @@ Harris corner detector.
 
 .. ocv:pyfunction:: cv2.cornerHarris(src, blockSize, ksize, k[, dst[, borderType]]) -> dst
 
-.. ocv:cfunction:: void cvCornerHarris( const CvArr* image, CvArr* harris_responce, int block_size, int aperture_size=3, double k=0.04 )
+.. ocv:cfunction:: void cvCornerHarris( const CvArr* image, CvArr* harris_response, int block_size, int aperture_size=3, double k=0.04 )
 
     :param src: Input single-channel 8-bit or floating-point image.
 
