@@ -705,6 +705,24 @@ static void max64f( const double* src1, size_t step1,
                     const double* src2, size_t step2,
                     double* dst, size_t step, Size sz, void* )
 {
+#if ARITHM_USE_IPP == 1
+    double* s1 = (double*)src1;
+    double* s2 = (double*)src2;
+    double* d  = dst;
+    fixSteps(sz, sizeof(dst[0]), step1, step2, step);
+    int i = 0;
+    for(; i < sz.height; i++)
+    {
+        if (0 > ippsMaxEvery_64f(s1, s2, d, sz.width))
+            break;
+        s1 = (double*)((uchar*)s1 + step1);
+        s2 = (double*)((uchar*)s2 + step2);
+        d  = (double*)((uchar*)d + step);
+    }
+    if (i == sz.height)
+        return;
+    setIppErrorStatus();
+#endif
     vBinOp64<double, OpMax<double>, IF_SIMD(VMax<double>)>(src1, step1, src2, step2, dst, step, sz);
 }
 
@@ -808,6 +826,24 @@ static void min64f( const double* src1, size_t step1,
                     const double* src2, size_t step2,
                     double* dst, size_t step, Size sz, void* )
 {
+#if ARITHM_USE_IPP == 1
+    double* s1 = (double*)src1;
+    double* s2 = (double*)src2;
+    double* d  = dst;
+    fixSteps(sz, sizeof(dst[0]), step1, step2, step);
+    int i = 0;
+    for(; i < sz.height; i++)
+    {
+        if (0 > ippsMinEvery_64f(s1, s2, d, sz.width))
+            break;
+        s1 = (double*)((uchar*)s1 + step1);
+        s2 = (double*)((uchar*)s2 + step2);
+        d  = (double*)((uchar*)d + step);
+    }
+    if (i == sz.height)
+        return;
+    setIppErrorStatus();
+#endif
     vBinOp64<double, OpMin<double>, IF_SIMD(VMin<double>)>(src1, step1, src2, step2, dst, step, sz);
 }
 
@@ -1777,39 +1813,60 @@ void cv::add( InputArray src1, InputArray src2, OutputArray dst,
     arithm_op(src1, src2, dst, mask, dtype, getAddTab(), false, 0, OCL_OP_ADD );
 }
 
-void cv::subtract( InputArray src1, InputArray src2, OutputArray dst,
+void cv::subtract( InputArray _src1, InputArray _src2, OutputArray _dst,
                InputArray mask, int dtype )
 {
 #ifdef HAVE_TEGRA_OPTIMIZATION
-    if (mask.empty() && src1.depth() == CV_8U && src2.depth() == CV_8U)
-    {
-        if (dtype == -1 && dst.fixedType())
-            dtype = dst.depth();
+    int kind1 = _src1.kind(), kind2 = _src2.kind();
+    Mat src1 = _src1.getMat(), src2 = _src2.getMat();
+    bool src1Scalar = checkScalar(src1, _src2.type(), kind1, kind2);
+    bool src2Scalar = checkScalar(src2, _src1.type(), kind2, kind1);
 
-        if (!dst.fixedType() || dtype == dst.depth())
+    if (!src1Scalar && !src2Scalar &&
+        src1.depth() == CV_8U && src2.type() == src1.type() &&
+        src1.dims == 2 && src2.size() == src1.size() &&
+        mask.empty())
+    {
+        if (dtype < 0)
         {
+            if (_dst.fixedType())
+            {
+                dtype = _dst.depth();
+            }
+            else
+            {
+                dtype = src1.depth();
+            }
+        }
+
+        dtype = CV_MAT_DEPTH(dtype);
+
+        if (!_dst.fixedType() || dtype == _dst.depth())
+        {
+            _dst.create(src1.size(), CV_MAKE_TYPE(dtype, src1.channels()));
+
             if (dtype == CV_16S)
             {
-                Mat _dst = dst.getMat();
-                if(tegra::subtract_8u8u16s(src1.getMat(), src2.getMat(), _dst))
+                Mat dst = _dst.getMat();
+                if(tegra::subtract_8u8u16s(src1, src2, dst))
                     return;
             }
             else if (dtype == CV_32F)
             {
-                Mat _dst = dst.getMat();
-                if(tegra::subtract_8u8u32f(src1.getMat(), src2.getMat(), _dst))
+                Mat dst = _dst.getMat();
+                if(tegra::subtract_8u8u32f(src1, src2, dst))
                     return;
             }
             else if (dtype == CV_8S)
             {
-                Mat _dst = dst.getMat();
-                if(tegra::subtract_8u8u8s(src1.getMat(), src2.getMat(), _dst))
+                Mat dst = _dst.getMat();
+                if(tegra::subtract_8u8u8s(src1, src2, dst))
                     return;
             }
         }
     }
 #endif
-    arithm_op(src1, src2, dst, mask, dtype, getSubTab(), false, 0, OCL_OP_SUB );
+    arithm_op(_src1, _src2, _dst, mask, dtype, getSubTab(), false, 0, OCL_OP_SUB );
 }
 
 void cv::absdiff( InputArray src1, InputArray src2, OutputArray dst )
@@ -1977,7 +2034,16 @@ recip_( const T*, size_t, const T* src2, size_t step2,
 static void mul8u( const uchar* src1, size_t step1, const uchar* src2, size_t step2,
                    uchar* dst, size_t step, Size sz, void* scale)
 {
-    mul_(src1, step1, src2, step2, dst, step, sz, (float)*(const double*)scale);
+    float fscale = (float)*(const double*)scale;
+#if defined HAVE_IPP
+    if (std::fabs(fscale - 1) <= FLT_EPSILON)
+    {
+        if (ippiMul_8u_C1RSfs(src1, (int)step1, src2, (int)step2, dst, (int)step, ippiSize(sz), 0) >= 0)
+            return;
+        setIppErrorStatus();
+    }
+#endif
+    mul_(src1, step1, src2, step2, dst, step, sz, fscale);
 }
 
 static void mul8s( const schar* src1, size_t step1, const schar* src2, size_t step2,
@@ -1989,13 +2055,31 @@ static void mul8s( const schar* src1, size_t step1, const schar* src2, size_t st
 static void mul16u( const ushort* src1, size_t step1, const ushort* src2, size_t step2,
                     ushort* dst, size_t step, Size sz, void* scale)
 {
-    mul_(src1, step1, src2, step2, dst, step, sz, (float)*(const double*)scale);
+    float fscale = (float)*(const double*)scale;
+#if defined HAVE_IPP
+    if (std::fabs(fscale - 1) <= FLT_EPSILON)
+    {
+        if (ippiMul_16u_C1RSfs(src1, (int)step1, src2, (int)step2, dst, (int)step, ippiSize(sz), 0) >= 0)
+            return;
+        setIppErrorStatus();
+    }
+#endif
+    mul_(src1, step1, src2, step2, dst, step, sz, fscale);
 }
 
 static void mul16s( const short* src1, size_t step1, const short* src2, size_t step2,
                     short* dst, size_t step, Size sz, void* scale)
 {
-    mul_(src1, step1, src2, step2, dst, step, sz, (float)*(const double*)scale);
+    float fscale = (float)*(const double*)scale;
+#if defined HAVE_IPP
+    if (std::fabs(fscale - 1) <= FLT_EPSILON)
+    {
+        if (ippiMul_16s_C1RSfs(src1, (int)step1, src2, (int)step2, dst, (int)step, ippiSize(sz), 0) >= 0)
+            return;
+        setIppErrorStatus();
+    }
+#endif
+    mul_(src1, step1, src2, step2, dst, step, sz, fscale);
 }
 
 static void mul32s( const int* src1, size_t step1, const int* src2, size_t step2,
@@ -2007,7 +2091,16 @@ static void mul32s( const int* src1, size_t step1, const int* src2, size_t step2
 static void mul32f( const float* src1, size_t step1, const float* src2, size_t step2,
                     float* dst, size_t step, Size sz, void* scale)
 {
-    mul_(src1, step1, src2, step2, dst, step, sz, (float)*(const double*)scale);
+    float fscale = (float)*(const double*)scale;
+#if defined HAVE_IPP
+    if (std::fabs(fscale - 1) <= FLT_EPSILON)
+    {
+        if (ippiMul_32f_C1R(src1, (int)step1, src2, (int)step2, dst, (int)step, ippiSize(sz)) >= 0)
+            return;
+        setIppErrorStatus();
+    }
+#endif
+    mul_(src1, step1, src2, step2, dst, step, sz, fscale);
 }
 
 static void mul64f( const double* src1, size_t step1, const double* src2, size_t step2,

@@ -2665,7 +2665,7 @@ void cv::hconcat(const Mat* src, size_t nsrc, OutputArray _dst)
     size_t i;
     for( i = 0; i < nsrc; i++ )
     {
-        CV_Assert( !src[i].empty() && src[i].dims <= 2 &&
+        CV_Assert( src[i].dims <= 2 &&
                    src[i].rows == src[0].rows &&
                    src[i].type() == src[0].type());
         totalCols += src[i].cols;
@@ -2705,7 +2705,7 @@ void cv::vconcat(const Mat* src, size_t nsrc, OutputArray _dst)
     size_t i;
     for( i = 0; i < nsrc; i++ )
     {
-        CV_Assert( !src[i].empty() && src[i].dims <= 2 &&
+        CV_Assert(src[i].dims <= 2 &&
                   src[i].cols == src[0].cols &&
                   src[i].type() == src[0].type());
         totalRows += src[i].rows;
@@ -3019,29 +3019,63 @@ void cv::transpose( InputArray _src, OutputArray _dst )
         return;
     }
 
-#if defined(HAVE_IPP) && !defined(HAVE_IPP_ICV_ONLY)
+#if defined HAVE_IPP
     typedef IppStatus (CV_STDCALL * ippiTranspose)(const void * pSrc, int srcStep, void * pDst, int dstStep, IppiSize roiSize);
-    ippiTranspose ippFunc =
-    type == CV_8UC1 ? (ippiTranspose)ippiTranspose_8u_C1R :
-    type == CV_8UC3 ? (ippiTranspose)ippiTranspose_8u_C3R :
-    type == CV_8UC4 ? (ippiTranspose)ippiTranspose_8u_C4R :
-    type == CV_16UC1 ? (ippiTranspose)ippiTranspose_16u_C1R :
-    type == CV_16UC3 ? (ippiTranspose)ippiTranspose_16u_C3R :
-    type == CV_16UC4 ? (ippiTranspose)ippiTranspose_16u_C4R :
-    type == CV_16SC1 ? (ippiTranspose)ippiTranspose_16s_C1R :
-    type == CV_16SC3 ? (ippiTranspose)ippiTranspose_16s_C3R :
-    type == CV_16SC4 ? (ippiTranspose)ippiTranspose_16s_C4R :
-    type == CV_32SC1 ? (ippiTranspose)ippiTranspose_32s_C1R :
-    type == CV_32SC3 ? (ippiTranspose)ippiTranspose_32s_C3R :
-    type == CV_32SC4 ? (ippiTranspose)ippiTranspose_32s_C4R :
-    type == CV_32FC1 ? (ippiTranspose)ippiTranspose_32f_C1R :
-    type == CV_32FC3 ? (ippiTranspose)ippiTranspose_32f_C3R :
-    type == CV_32FC4 ? (ippiTranspose)ippiTranspose_32f_C4R : 0;
+    typedef IppStatus (CV_STDCALL * ippiTransposeI)(const void * pSrcDst, int srcDstStep, IppiSize roiSize);
+    ippiTranspose ippFunc = 0;
+    ippiTransposeI ippFuncI = 0;
+
+    if (dst.data == src.data && dst.cols == dst.rows)
+    {
+        CV_SUPPRESS_DEPRECATED_START
+        ippFuncI =
+            type == CV_8UC1 ? (ippiTransposeI)ippiTranspose_8u_C1IR :
+            type == CV_8UC3 ? (ippiTransposeI)ippiTranspose_8u_C3IR :
+            type == CV_8UC4 ? (ippiTransposeI)ippiTranspose_8u_C4IR :
+            type == CV_16UC1 ? (ippiTransposeI)ippiTranspose_16u_C1IR :
+            type == CV_16UC3 ? (ippiTransposeI)ippiTranspose_16u_C3IR :
+            type == CV_16UC4 ? (ippiTransposeI)ippiTranspose_16u_C4IR :
+            type == CV_16SC1 ? (ippiTransposeI)ippiTranspose_16s_C1IR :
+            type == CV_16SC3 ? (ippiTransposeI)ippiTranspose_16s_C3IR :
+            type == CV_16SC4 ? (ippiTransposeI)ippiTranspose_16s_C4IR :
+            type == CV_32SC1 ? (ippiTransposeI)ippiTranspose_32s_C1IR :
+            type == CV_32SC3 ? (ippiTransposeI)ippiTranspose_32s_C3IR :
+            type == CV_32SC4 ? (ippiTransposeI)ippiTranspose_32s_C4IR :
+            type == CV_32FC1 ? (ippiTransposeI)ippiTranspose_32f_C1IR :
+            type == CV_32FC3 ? (ippiTransposeI)ippiTranspose_32f_C3IR :
+            type == CV_32FC4 ? (ippiTransposeI)ippiTranspose_32f_C4IR : 0;
+        CV_SUPPRESS_DEPRECATED_END
+    }
+    else
+    {
+        ippFunc =
+            type == CV_8UC1 ? (ippiTranspose)ippiTranspose_8u_C1R :
+            type == CV_8UC3 ? (ippiTranspose)ippiTranspose_8u_C3R :
+            type == CV_8UC4 ? (ippiTranspose)ippiTranspose_8u_C4R :
+            type == CV_16UC1 ? (ippiTranspose)ippiTranspose_16u_C1R :
+            type == CV_16UC3 ? (ippiTranspose)ippiTranspose_16u_C3R :
+            type == CV_16UC4 ? (ippiTranspose)ippiTranspose_16u_C4R :
+            type == CV_16SC1 ? (ippiTranspose)ippiTranspose_16s_C1R :
+            type == CV_16SC3 ? (ippiTranspose)ippiTranspose_16s_C3R :
+            type == CV_16SC4 ? (ippiTranspose)ippiTranspose_16s_C4R :
+            type == CV_32SC1 ? (ippiTranspose)ippiTranspose_32s_C1R :
+            type == CV_32SC3 ? (ippiTranspose)ippiTranspose_32s_C3R :
+            type == CV_32SC4 ? (ippiTranspose)ippiTranspose_32s_C4R :
+            type == CV_32FC1 ? (ippiTranspose)ippiTranspose_32f_C1R :
+            type == CV_32FC3 ? (ippiTranspose)ippiTranspose_32f_C3R :
+            type == CV_32FC4 ? (ippiTranspose)ippiTranspose_32f_C4R : 0;
+    }
 
     IppiSize roiSize = { src.cols, src.rows };
     if (ippFunc != 0)
     {
         if (ippFunc(src.data, (int)src.step, dst.data, (int)dst.step, roiSize) >= 0)
+            return;
+        setIppErrorStatus();
+    }
+    else if (ippFuncI != 0)
+    {
+        if (ippFuncI(dst.data, (int)dst.step, roiSize) >= 0)
             return;
         setIppErrorStatus();
     }
@@ -3234,7 +3268,7 @@ typedef void (*ReduceFunc)( const Mat& src, Mat& dst );
 #define reduceMinR32f reduceR_<float, float, OpMin<float> >
 #define reduceMinR64f reduceR_<double,double,OpMin<double> >
 
-#if IPP_VERSION_X100 > 0 && !defined HAVE_IPP_ICV_ONLY
+#if IPP_VERSION_X100 > 0
 
 static inline void reduceSumC_8u16u16s32f_64f(const cv::Mat& srcmat, cv::Mat& dstmat)
 {
@@ -3308,7 +3342,7 @@ static inline void reduceSumC_8u16u16s32f_64f(const cv::Mat& srcmat, cv::Mat& ds
 #define reduceSumC32f32f reduceC_<float, float, OpAdd<float> >
 #define reduceSumC64f64f reduceC_<double,double,OpAdd<double> >
 
-#if IPP_VERSION_X100 > 0 && !defined HAVE_IPP_ICV_ONLY
+#if IPP_VERSION_X100 > 0
 #define reduceSumC8u64f  reduceSumC_8u16u16s32f_64f
 #define reduceSumC16u64f reduceSumC_8u16u16s32f_64f
 #define reduceSumC16s64f reduceSumC_8u16u16s32f_64f
@@ -3320,7 +3354,7 @@ static inline void reduceSumC_8u16u16s32f_64f(const cv::Mat& srcmat, cv::Mat& ds
 #define reduceSumC32f64f reduceC_<float, double,OpAdd<double> >
 #endif
 
-#if IPP_VERSION_X100 > 0 && !defined HAVE_IPP_ICV_ONLY
+#if IPP_VERSION_X100 > 0
 #define REDUCE_OP(favor, optype, type1, type2) \
 static inline void reduce##optype##C##favor(const cv::Mat& srcmat, cv::Mat& dstmat) \
 { \
@@ -3344,7 +3378,7 @@ static inline void reduce##optype##C##favor(const cv::Mat& srcmat, cv::Mat& dstm
 }
 #endif
 
-#if IPP_VERSION_X100 > 0 && !defined HAVE_IPP_ICV_ONLY
+#if IPP_VERSION_X100 > 0
 REDUCE_OP(8u, Max, uchar, uchar)
 REDUCE_OP(16u, Max, ushort, ushort)
 REDUCE_OP(16s, Max, short, short)
@@ -3357,7 +3391,7 @@ REDUCE_OP(32f, Max, float, float)
 #endif
 #define reduceMaxC64f reduceC_<double,double,OpMax<double> >
 
-#if IPP_VERSION_X100 > 0 && !defined HAVE_IPP_ICV_ONLY
+#if IPP_VERSION_X100 > 0
 REDUCE_OP(8u, Min, uchar, uchar)
 REDUCE_OP(16u, Min, ushort, ushort)
 REDUCE_OP(16s, Min, short, short)
@@ -3580,28 +3614,28 @@ void cv::reduce(InputArray _src, OutputArray _dst, int dim, int op, int dtype)
 namespace cv
 {
 
-#if IPP_VERSION_X100 > 0 && !defined HAVE_IPP_ICV_ONLY
+#if IPP_VERSION_X100 > 0
 #define USE_IPP_SORT
 
-typedef IppStatus (CV_STDCALL *IppSortFunc)(void *, int);
+typedef IppStatus (CV_STDCALL * IppSortFunc)(void *, int);
 typedef IppSortFunc IppFlipFunc;
 
 static IppSortFunc getSortFunc(int depth, bool sortDescending)
 {
     if (!sortDescending)
         return depth == CV_8U ? (IppSortFunc)ippsSortAscend_8u_I :
-            depth == CV_16U ? (IppSortFunc)ippsSortAscend_16u_I :
+            /*depth == CV_16U ? (IppSortFunc)ippsSortAscend_16u_I :
             depth == CV_16S ? (IppSortFunc)ippsSortAscend_16s_I :
             depth == CV_32S ? (IppSortFunc)ippsSortAscend_32s_I :
             depth == CV_32F ? (IppSortFunc)ippsSortAscend_32f_I :
-            depth == CV_64F ? (IppSortFunc)ippsSortAscend_64f_I : 0;
+            depth == CV_64F ? (IppSortFunc)ippsSortAscend_64f_I :*/ 0;
     else
         return depth == CV_8U ? (IppSortFunc)ippsSortDescend_8u_I :
-            depth == CV_16U ? (IppSortFunc)ippsSortDescend_16u_I :
+            /*depth == CV_16U ? (IppSortFunc)ippsSortDescend_16u_I :
             depth == CV_16S ? (IppSortFunc)ippsSortDescend_16s_I :
             depth == CV_32S ? (IppSortFunc)ippsSortDescend_32s_I :
             depth == CV_32F ? (IppSortFunc)ippsSortDescend_32f_I :
-            depth == CV_64F ? (IppSortFunc)ippsSortDescend_64f_I : 0;
+            depth == CV_64F ? (IppSortFunc)ippsSortDescend_64f_I :*/ 0;
 }
 
 static IppFlipFunc getFlipFunc(int depth)
@@ -3609,9 +3643,9 @@ static IppFlipFunc getFlipFunc(int depth)
     CV_SUPPRESS_DEPRECATED_START
     return
             depth == CV_8U || depth == CV_8S ? (IppFlipFunc)ippsFlip_8u_I :
-            depth == CV_16U || depth == CV_16S ? (IppFlipFunc)ippsFlip_16u_I :
+            /*depth == CV_16U || depth == CV_16S ? (IppFlipFunc)ippsFlip_16u_I :
             depth == CV_32S || depth == CV_32F ? (IppFlipFunc)ippsFlip_32f_I :
-            depth == CV_64F ? (IppFlipFunc)ippsFlip_64f_I : 0;
+            depth == CV_64F ? (IppFlipFunc)ippsFlip_64f_I : */0;
     CV_SUPPRESS_DEPRECATED_END
 }
 
@@ -3666,7 +3700,8 @@ template<typename T> static void sort_( const Mat& src, Mat& dst, int flags )
 #endif
         {
 #ifdef USE_IPP_SORT
-            setIppErrorStatus();
+            if (depth != CV_8U)
+                setIppErrorStatus();
 #endif
             std::sort( ptr, ptr + len );
             if( sortDescending )
@@ -3698,7 +3733,7 @@ public:
     const _Tp* arr;
 };
 
-#ifdef USE_IPP_SORT
+#if defined USE_IPP_SORT && 0
 
 typedef IppStatus (CV_STDCALL *IppSortIndexFunc)(void *, int *, int);
 
@@ -3745,7 +3780,7 @@ template<typename T> static void sortIdx_( const Mat& src, Mat& dst, int flags )
     bptr = (T*)buf;
     _iptr = (int*)ibuf;
 
-#ifdef USE_IPP_SORT
+#if defined USE_IPP_SORT && 0
     int depth = src.depth();
     IppSortIndexFunc ippFunc = getSortIndexFunc(depth, sortDescending);
     IppFlipFunc ippFlipFunc = getFlipFunc(depth);
@@ -3769,21 +3804,21 @@ template<typename T> static void sortIdx_( const Mat& src, Mat& dst, int flags )
         for( j = 0; j < len; j++ )
             iptr[j] = j;
 
-#ifdef USE_IPP_SORT
+#if defined USE_IPP_SORT && 0
         if (sortRows || !ippFunc || ippFunc(ptr, iptr, len) < 0)
 #endif
         {
-#ifdef USE_IPP_SORT
+#if defined USE_IPP_SORT && 0
             setIppErrorStatus();
 #endif
             std::sort( iptr, iptr + len, LessThanIdx<T>(ptr) );
             if( sortDescending )
             {
-#ifdef USE_IPP_SORT
+#if defined USE_IPP_SORT && 0
                 if (!ippFlipFunc || ippFlipFunc(iptr, len) < 0)
 #endif
                 {
-#ifdef USE_IPP_SORT
+#if defined USE_IPP_SORT && 0
                     setIppErrorStatus();
 #endif
                     for( j = 0; j < len/2; j++ )
@@ -4015,15 +4050,17 @@ double cv::kmeans( InputArray _data, int K,
                    int flags, OutputArray _centers )
 {
     const int SPP_TRIALS = 3;
-    Mat data = _data.getMat();
-    bool isrow = data.rows == 1 && data.channels() > 1;
-    int N = !isrow ? data.rows : data.cols;
-    int dims = (!isrow ? data.cols : 1)*data.channels();
-    int type = data.depth();
+    Mat data0 = _data.getMat();
+    bool isrow = data0.rows == 1 && data0.channels() > 1;
+    int N = !isrow ? data0.rows : data0.cols;
+    int dims = (!isrow ? data0.cols : 1)*data0.channels();
+    int type = data0.depth();
 
     attempts = std::max(attempts, 1);
-    CV_Assert( data.dims <= 2 && type == CV_32F && K > 0 );
+    CV_Assert( data0.dims <= 2 && type == CV_32F && K > 0 );
     CV_Assert( N >= K );
+
+    Mat data(N, dims, CV_32F, data0.data, isrow ? dims * sizeof(float) : static_cast<size_t>(data0.step));
 
     _bestLabels.create(N, 1, CV_32S, -1, true);
 
