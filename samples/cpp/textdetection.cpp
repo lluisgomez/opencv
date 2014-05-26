@@ -52,6 +52,60 @@ struct line_estimates
   int h_max;
 };
 
+float distanceLinesEstimates(line_estimates &a, line_estimates &b);
+
+float distanceLinesEstimates(line_estimates &a, line_estimates &b)
+{
+  int x_min = min(a.x_min, b.x_min);
+  int x_max = max(a.x_max, b.x_max);
+  int h_max = max(a.h_max, b.h_max);
+
+  float dist_top = INT_MAX, dist_bottom = INT_MAX;
+  for (int i=0; i<2; i++)
+  {
+    float top_a0, top_a1, bottom_a0, bottom_a1;
+    if (i == 0)
+    {
+      top_a0 = a.top1_a0;
+      top_a1 = a.top1_a1;
+      bottom_a0 = a.bottom1_a0;
+      bottom_a1 = a.bottom1_a1;
+    } else {
+      top_a0 = a.top2_a0;
+      top_a1 = a.top2_a1;
+      bottom_a0 = a.bottom2_a0;
+      bottom_a1 = a.bottom2_a1;
+    }
+    for (int j=0; j<2; j++)
+    {
+      float top_b0, top_b1;
+      float bottom_b0, bottom_b1;
+      if (j==0)
+      {
+        top_b0 = b.top1_a0;
+        top_b1 = b.top1_a1;
+        bottom_b0 = b.bottom1_a0;
+        bottom_b1 = b.bottom1_a1;
+      } else {
+        top_b0 = b.top2_a0;
+        top_b1 = b.top2_a1;
+        bottom_b0 = b.bottom2_a0;
+        bottom_b1 = b.bottom2_a1;
+      }
+
+      float x_min_dist = abs((top_a0+x_min*top_a1) - (top_b0+x_min*top_b1));
+      float x_max_dist = abs((top_a0+x_max*top_a1) - (top_b0+x_max*top_b1));
+      dist_top    = min(dist_top, max(x_min_dist,x_max_dist)/h_max);
+
+      x_min_dist  = abs((bottom_a0+x_min*bottom_a1) - (bottom_b0+x_min*bottom_b1));
+      x_max_dist  = abs((bottom_a0+x_max*bottom_a1) - (bottom_b0+x_max*bottom_b1));
+      dist_bottom = min(dist_bottom, max(x_min_dist,x_max_dist)/h_max);
+    }
+  }
+
+  return max(dist_top, dist_bottom);
+}
+
 struct region_pair
 {
 	Vec2i a;
@@ -475,7 +529,7 @@ int  main(int argc, const char * argv[])
         channels.push_back(255-channels[c]);
 
     // Create ERFilter objects with the 1st and 2nd stage default classifiers
-    Ptr<ERFilter> er_filter1 = createERFilterNM1(loadClassifierNM1("trained_classifierNM1.xml"),16,0.00015,0.13,0.2,true,0.1);
+    Ptr<ERFilter> er_filter1 = createERFilterNM1(loadClassifierNM1("trained_classifierNM1.xml"),8,0.00015,0.13,0.2,true,0.1);
     Ptr<ERFilter> er_filter2 = createERFilterNM2(loadClassifierNM2("trained_classifierNM2.xml"),0.5);
 
     vector<vector<ERStat> > regions(channels.size());
