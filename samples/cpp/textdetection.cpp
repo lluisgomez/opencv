@@ -27,14 +27,16 @@ void er_show(vector<Mat> &channels, vector<vector<ERStat> > &regions);
 //This to be moved to include file
 
 //these threshold values are learned from training dataset
-#define PAIR_MIN_HEIGHT_RATIO    0.4
-#define PAIR_MIN_CENTROID_ANGLE -0.85
-#define PAIR_MAX_CENTROID_ANGLE  0.85
-#define PAIR_MIN_REGION_DIST    -0.4 
-#define PAIR_MAX_REGION_DIST     2.2
+#define PAIR_MIN_HEIGHT_RATIO     0.4
+#define PAIR_MIN_CENTROID_ANGLE - 0.85
+#define PAIR_MAX_CENTROID_ANGLE   0.85
+#define PAIR_MIN_REGION_DIST    - 0.4 
+#define PAIR_MAX_REGION_DIST      2.2
 
-#define TRIPLET_MAX_DIST         0.9
-#define TRIPLET_MAX_SLOPE        0.3
+#define TRIPLET_MAX_DIST          0.9
+#define TRIPLET_MAX_SLOPE         0.3
+
+#define SEQUENCE_MAX_TRIPLET_DIST 0.3
 
 
 struct line_estimates
@@ -106,6 +108,7 @@ float distanceLinesEstimates(line_estimates &a, line_estimates &b)
   return max(dist_top, dist_bottom);
 }
 
+
 struct region_pair
 {
 	Vec2i a;
@@ -122,8 +125,23 @@ struct region_triplet
   region_triplet (Vec2i _a, Vec2i _b, Vec2i _c) : a(_a), b(_b), c(_c) {}
 };
 
+struct region_sequence
+{
+	vector<Vec2i> regions;
+  line_estimates estimates_left;
+  line_estimates estimates_right;
+  region_sequence (region_triplet t) : estimates_left(t.estimates), estimates_right(t.estimates) 
+  {
+    regions.push_back(t.a);
+    regions.push_back(t.b);
+    regions.push_back(t.c);
+  }
+  region_sequence () {}
+};
+
 bool isValidPair(std::vector< std::vector<ERStat> >& regions, cv::Vec2i idx1, cv::Vec2i idx2);
 bool isValidTriplet(std::vector< std::vector<ERStat> >& regions, region_pair pair1, region_pair pair2, region_triplet &triplet);
+bool isValidSequence(std::vector< std::vector<ERStat> >& regions, region_sequence &sequence, region_triplet &triplet, region_sequence &new_sequence);
 void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> >& regions,  std::vector< std::vector<Vec2i> >& groups);
 // Fit line from two points
 // out a0 is the intercept
@@ -411,6 +429,17 @@ bool isValidTriplet(std::vector< std::vector<ERStat> >& regions, region_pair pai
 	return false;
 }
 
+bool isValidSequence(std::vector< std::vector<ERStat> >& regions, region_sequence &sequence, region_triplet &triplet, region_sequence &new_sequence)
+{
+  // sequences are vector<Vec2i> and two line estimates one for each boundary
+  // // triplets and sequences are sorted
+  // // so first check if the given triplet t has the two end points equal to the first two points in sequence
+  //   or the two first points equal to the last two pointScene2s in sequence
+  //           // if so, the calculate the dist between line estimates and if its smaller than threshold then 
+  //           //merge the triplet in a new sequence and update the boundary line estimate
+  return false;
+}
+
 void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> >& regions,  std::vector< std::vector<Vec2i> >& groups)
 {
 
@@ -466,6 +495,37 @@ void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> 
 	}
 	
   cout << "GroupingNM : detected " << valid_triplets.size() << " valid triplets" << endl;
+
+  vector<region_sequence> valid_sequences;
+  vector<region_sequence> pending_sequences;
+
+	for (size_t i=0; i<valid_triplets.size(); i++)
+	{
+    pending_sequences.push_back(region_sequence(valid_triplets[i]));
+  }
+
+  int counter = 4;
+  while(!pending_sequences.empty())
+  {
+    cout << "GroupingNM : we have " << pending_sequences.size() << " sequences of " << counter-1 << " regions." << endl;
+    cout << "GroupingNM : searching for sequences of " << counter << " regions." << endl;
+    vector<region_sequence> tmp_pending_sequences;
+	  for (size_t i=0; i<pending_sequences.size(); i++)
+    {
+	    for (size_t j=0; j<valid_triplets.size(); j++)
+	    {
+        region_sequence new_sequence(valid_triplets[j]);
+        if (isValidSequence(regions, pending_sequences[i], valid_triplets[j], new_sequence))
+        {
+          valid_sequences.push_back(new_sequence);
+          tmp_pending_sequences.push_back(new_sequence);
+        }
+      }
+    }
+    tmp_pending_sequences.swap(pending_sequences);
+    counter++;
+  }
+  
 
 	//TODO remove this, it is only to visualize 
   Mat lines = Mat::zeros(src[0].rows+2,src[0].cols+2,CV_8UC3);
