@@ -37,112 +37,153 @@ void er_show(vector<Mat> &channels, vector<vector<ERStat> > &regions);
 #define TRIPLET_MAX_SLOPE         0.3
 
 #define SEQUENCE_MAX_TRIPLET_DIST 0.3
+#define SEQUENCE_MIN_LENGHT       4
 
-
+// struct line_estimates
+// Represents a line estimate (as above) for an ER's group
+// i.e.: slope and intercept of 2 top and 2 bottom lines
 struct line_estimates
 {
-  float top1_a0;
-  float top1_a1;
-  float top2_a0;
-  float top2_a1;
-  float bottom1_a0;
-  float bottom1_a1;
-  float bottom2_a0;
-  float bottom2_a1;
-  int x_min;
-  int x_max;
-  int h_max;
+    float top1_a0;
+    float top1_a1;
+    float top2_a0;
+    float top2_a1;
+    float bottom1_a0;
+    float bottom1_a1;
+    float bottom2_a0;
+    float bottom2_a1;
+    int x_min;
+    int x_max;
+    int h_max;
+    bool operator==(const line_estimates& e) const
+    {
+        return ( (top1_a0 == e.top1_a0) && (top1_a1 == e.top1_a1) && (top2_a0 == e.top2_a0) &&
+        (top2_a1 == e.top2_a1) && (bottom1_a0 == e.bottom1_a0) && (bottom1_a1 == e.bottom1_a1) &&
+        (bottom2_a0 == e.bottom2_a0) && (bottom2_a1 == e.bottom2_a1) && (x_min == e.x_min) &&
+        (x_max == e.x_max) && (h_max == e.h_max) );
+    }
 };
 
+// distanceLinesEstimates
+// Calculates the distance between two line estimates deﬁned as the largest
+// normalized vertical difference of their top/bottom lines at their boundary points
+// out float distance
 float distanceLinesEstimates(line_estimates &a, line_estimates &b);
 
 float distanceLinesEstimates(line_estimates &a, line_estimates &b)
 {
-  int x_min = min(a.x_min, b.x_min);
-  int x_max = max(a.x_max, b.x_max);
-  int h_max = max(a.h_max, b.h_max);
+    CV_Assert( (a.h_max != 0) && ( b.h_max != 0));
 
-  float dist_top = INT_MAX, dist_bottom = INT_MAX;
-  for (int i=0; i<2; i++)
-  {
-    float top_a0, top_a1, bottom_a0, bottom_a1;
-    if (i == 0)
+    if (a == b)
+        return 0.0f;
+
+    int x_min = min(a.x_min, b.x_min);
+    int x_max = max(a.x_max, b.x_max);
+    int h_max = max(a.h_max, b.h_max);
+
+    float dist_top = INT_MAX, dist_bottom = INT_MAX;
+    for (int i=0; i<2; i++)
     {
-      top_a0 = a.top1_a0;
-      top_a1 = a.top1_a1;
-      bottom_a0 = a.bottom1_a0;
-      bottom_a1 = a.bottom1_a1;
-    } else {
-      top_a0 = a.top2_a0;
-      top_a1 = a.top2_a1;
-      bottom_a0 = a.bottom2_a0;
-      bottom_a1 = a.bottom2_a1;
+        float top_a0, top_a1, bottom_a0, bottom_a1;
+        if (i == 0)
+        {
+            top_a0 = a.top1_a0;
+            top_a1 = a.top1_a1;
+            bottom_a0 = a.bottom1_a0;
+            bottom_a1 = a.bottom1_a1;
+        } else {
+            top_a0 = a.top2_a0;
+            top_a1 = a.top2_a1;
+            bottom_a0 = a.bottom2_a0;
+            bottom_a1 = a.bottom2_a1;
+        }
+        for (int j=0; j<2; j++)
+        {
+            float top_b0, top_b1, bottom_b0, bottom_b1;
+            if (j==0)
+            {
+                top_b0 = b.top1_a0;
+                top_b1 = b.top1_a1;
+                bottom_b0 = b.bottom1_a0;
+                bottom_b1 = b.bottom1_a1;
+            } else {
+                top_b0 = b.top2_a0;
+                top_b1 = b.top2_a1;
+                bottom_b0 = b.bottom2_a0;
+                bottom_b1 = b.bottom2_a1;
+            }
+
+            float x_min_dist = abs((top_a0+x_min*top_a1) - (top_b0+x_min*top_b1));
+            float x_max_dist = abs((top_a0+x_max*top_a1) - (top_b0+x_max*top_b1));
+            dist_top    = min(dist_top, max(x_min_dist,x_max_dist)/h_max);
+
+            x_min_dist  = abs((bottom_a0+x_min*bottom_a1) - (bottom_b0+x_min*bottom_b1));
+            x_max_dist  = abs((bottom_a0+x_max*bottom_a1) - (bottom_b0+x_max*bottom_b1));
+            dist_bottom = min(dist_bottom, max(x_min_dist,x_max_dist)/h_max);
+        }
     }
-    for (int j=0; j<2; j++)
-    {
-      float top_b0, top_b1;
-      float bottom_b0, bottom_b1;
-      if (j==0)
-      {
-        top_b0 = b.top1_a0;
-        top_b1 = b.top1_a1;
-        bottom_b0 = b.bottom1_a0;
-        bottom_b1 = b.bottom1_a1;
-      } else {
-        top_b0 = b.top2_a0;
-        top_b1 = b.top2_a1;
-        bottom_b0 = b.bottom2_a0;
-        bottom_b1 = b.bottom2_a1;
-      }
-
-      float x_min_dist = abs((top_a0+x_min*top_a1) - (top_b0+x_min*top_b1));
-      float x_max_dist = abs((top_a0+x_max*top_a1) - (top_b0+x_max*top_b1));
-      dist_top    = min(dist_top, max(x_min_dist,x_max_dist)/h_max);
-
-      x_min_dist  = abs((bottom_a0+x_min*bottom_a1) - (bottom_b0+x_min*bottom_b1));
-      x_max_dist  = abs((bottom_a0+x_max*bottom_a1) - (bottom_b0+x_max*bottom_b1));
-      dist_bottom = min(dist_bottom, max(x_min_dist,x_max_dist)/h_max);
-    }
-  }
-
-  return max(dist_top, dist_bottom);
+    return max(dist_top, dist_bottom);
 }
 
-
+// struct region_pair
+// Represents a pair of ER's
 struct region_pair
 {
-	Vec2i a;
-	Vec2i b;
-  region_pair (Vec2i _a, Vec2i _b) : a(_a), b(_b) {}
+    Vec2i a;
+    Vec2i b;
+    region_pair (Vec2i _a, Vec2i _b) : a(_a), b(_b) {}
+    bool operator==(const region_pair& p1) const
+    {
+        return ( (p1.a == a) && (p1.b == b) );
+    }
 };
 
+// struct region_triplet
+// Represents a triplet of ER's
 struct region_triplet
 {
-	Vec2i a;
-	Vec2i b;
-	Vec2i c;
-  line_estimates estimates;
-  region_triplet (Vec2i _a, Vec2i _b, Vec2i _c) : a(_a), b(_b), c(_c) {}
+    Vec2i a;
+    Vec2i b;
+    Vec2i c;
+    line_estimates estimates;
+    region_triplet (Vec2i _a, Vec2i _b, Vec2i _c) : a(_a), b(_b), c(_c) {}
+    bool operator==(const region_triplet& t1) const
+    {
+        return ( (t1.a == a) && (t1.b == b) && (t1.c == c) );
+    }
 };
 
+// struct region_sequence
+// Represents a sequence of more than three ER's
 struct region_sequence
 {
-	vector<Vec2i> regions;
-  line_estimates estimates_left;
-  line_estimates estimates_right;
-  region_sequence (region_triplet t) : estimates_left(t.estimates), estimates_right(t.estimates) 
-  {
-    regions.push_back(t.a);
-    regions.push_back(t.b);
-    regions.push_back(t.c);
-  }
-  region_sequence () {}
+    vector<region_triplet> triplets;
+    region_sequence (region_triplet t)
+    {
+        triplets.push_back(t);
+    }
+    region_sequence () {}
 };
 
+// Evaluates if a pair of regions is valid or not
+// using thresholds learned on training (defined above)
 bool isValidPair(std::vector< std::vector<ERStat> >& regions, cv::Vec2i idx1, cv::Vec2i idx2);
+
+// Evaluates if a set of 3 regions is valid or not
+// using thresholds learned on training (defined above)
 bool isValidTriplet(std::vector< std::vector<ERStat> >& regions, region_pair pair1, region_pair pair2, region_triplet &triplet);
-bool isValidSequence(std::vector< std::vector<ERStat> >& regions, region_sequence &sequence, region_triplet &triplet, region_sequence &new_sequence);
+
+// Evaluates if a set of more than 3 regions is valid or not
+// using thresholds learned on training (defined above)
+bool isValidSequence(region_sequence &sequence1, region_sequence &sequence2);
+
+// Takes as input the set of ER's extracted by ERFilter
+// then finds for all valid pairs and triplets.
+// in regions the set of ER's extracted by ERFilter
+// in _src the channels from which the ER's were extracted
+// out sets of regions, each one represents a possible text line
 void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> >& regions,  std::vector< std::vector<Vec2i> >& groups);
+
 // Fit line from two points
 // out a0 is the intercept
 // out a1 is the slope
@@ -159,17 +200,19 @@ void fitLineOLS(Point p1, Point p2, Point p3, float &a0, float &a1);
 // returns the error of the single point that doesn't fit the line
 float fitLineLMS(Point p1, Point p2, Point p3, float &a0, float &a1);
 
-void fitLineEstimates(vector< vector<ERStat> > &regions, region_triplet &triplet);
+// Fit a line_estimate to a group of 3 regions
+// out triplet.estimates is updated with the new line estimates
+bool fitLineEstimates(vector< vector<ERStat> > &regions, region_triplet &triplet);
 
 // Fit line from two points
 // out a0 is the intercept
 // out a1 is the slope
 void fitLine(Point p1, Point p2, float &a0, float &a1)
 {
-  CV_Assert ( p1.x != p2.x );
+    CV_Assert ( p1.x != p2.x );
 
-  a1 = (float)(p2.y - p1.y) / (p2.x - p1.x);
-  a0 = a1 * -1 * p1.x + p1.y;
+    a1 = (float)(p2.y - p1.y) / (p2.x - p1.x);
+    a0 = a1 * -1 * p1.x + p1.y;
 }
 
 // Fit line from three points using Ordinary Least Squares
@@ -177,14 +220,14 @@ void fitLine(Point p1, Point p2, float &a0, float &a1)
 // out a1 is the slope
 void fitLineOLS(Point p1, Point p2, Point p3, float &a0, float &a1)
 {
-  float sumx  = p1.x + p2.x + p3.x;
-  float sumy  = p1.y + p2.y + p3.y;
-  float sumxy = p1.x*p1.y + p2.x*p2.y + p3.x*p3.y;
-  float sumx2 = p1.x*p1.x + p2.x*p2.x + p3.x*p3.x;
+    float sumx  = p1.x + p2.x + p3.x;
+    float sumy  = p1.y + p2.y + p3.y;
+    float sumxy = p1.x*p1.y + p2.x*p2.y + p3.x*p3.y;
+    float sumx2 = p1.x*p1.x + p2.x*p2.x + p3.x*p3.x;
 
-  // line coefficients
-  a0=(float)(sumy*sumx2-sumx*sumxy) / (3*sumx2-sumx*sumx);
-  a1=(float)(3*sumxy-sumx*sumy) / (3*sumx2-sumx*sumx);
+    // line coefficients
+    a0=(float)(sumy*sumx2-sumx*sumxy) / (3*sumx2-sumx*sumx);
+    a1=(float)(3*sumxy-sumx*sumy) / (3*sumx2-sumx*sumx);
 }
 
 // Fit line from three points using (heutistic) Least-Median of Squares
@@ -193,379 +236,443 @@ void fitLineOLS(Point p1, Point p2, Point p3, float &a0, float &a1)
 // returns the error of the single point that doesn't fit the line
 float fitLineLMS(Point p1, Point p2, Point p3, float &a0, float &a1)
 {
+    //if this is not changed the line is not valid
+    a0 = -1;
+    a1 = 0;
 
-  //Least-Median of Squares does not make sense with only three points
-  //becuse any line passing by two of them has median_error = 0
-  //So we'll take the one with smaller slope
-  float l_a0, l_a1, best_slope, err;
+    //Least-Median of Squares does not make sense with only three points
+    //becuse any line passing by two of them has median_error = 0
+    //So we'll take the one with smaller slope
+    float l_a0, l_a1, best_slope=INT_MAX, err=0;
 
-  fitLine(p1,p2,a0,a1);
-  best_slope = abs(a1);
-  err = (p3.y - (a0+a1*p3.x));
+    if (p1.x != p2.x)
+    {
+        fitLine(p1,p2,l_a0,l_a1);;
+        if (abs(l_a1) < best_slope)
+        {
+            best_slope = abs(l_a1);
+            a0 = l_a0;
+            a1 = l_a1;
+            err = (p3.y - (a0+a1*p3.x));
+        }
+    }
 
-  fitLine(p1,p3,l_a0,l_a1);
-  if (abs(l_a1) < best_slope)
-  {
-    best_slope = abs(l_a1);
-    a0 = l_a0;
-    a1 = l_a1;
-    err = (p2.y - (a0+a1*p2.x));
-  }
 
-  fitLine(p2,p3,l_a0,l_a1);
-  if (abs(l_a1) < best_slope)
-  {
-    best_slope = abs(l_a1);
-    a0 = l_a0;
-    a1 = l_a1;
-    err = (p1.y - (a0+a1*p1.x));
-  }
-  return err;
+    if (p1.x != p3.x)
+    {
+        fitLine(p1,p3,l_a0,l_a1);
+        if (abs(l_a1) < best_slope)
+        {
+            best_slope = abs(l_a1);
+            a0 = l_a0;
+            a1 = l_a1;
+            err = (p2.y - (a0+a1*p2.x));
+        }
+    }
+
+
+    if (p2.x != p3.x)
+    {
+        fitLine(p2,p3,l_a0,l_a1);
+        if (abs(l_a1) < best_slope)
+        {
+            best_slope = abs(l_a1);
+            a0 = l_a0;
+            a1 = l_a1;
+            err = (p1.y - (a0+a1*p1.x));
+        }
+    }
+    return err;
 
 }
 
-void fitLineEstimates(vector< vector<ERStat> > &regions, region_triplet &triplet)
+// Fit a line_estimate to a group of 3 regions
+// out triplet.estimates is updated with the new line estimates
+bool fitLineEstimates(vector< vector<ERStat> > &regions, region_triplet &triplet)
 {
-  vector<Rect> char_boxes;
-  char_boxes.push_back(regions[triplet.a[0]][triplet.a[1]].rect);
-  char_boxes.push_back(regions[triplet.b[0]][triplet.b[1]].rect);
-  char_boxes.push_back(regions[triplet.c[0]][triplet.c[1]].rect);
+    vector<Rect> char_boxes;
+    char_boxes.push_back(regions[triplet.a[0]][triplet.a[1]].rect);
+    char_boxes.push_back(regions[triplet.b[0]][triplet.b[1]].rect);
+    char_boxes.push_back(regions[triplet.c[0]][triplet.c[1]].rect);
 
-  triplet.estimates.x_min = min(min(char_boxes[0].tl().x,char_boxes[1].tl().x), char_boxes[2].tl().x);
-  triplet.estimates.x_max = max(max(char_boxes[0].br().x,char_boxes[1].br().x), char_boxes[2].br().x);
-  triplet.estimates.h_max = max(max(char_boxes[0].height,char_boxes[1].height), char_boxes[2].height);
+    triplet.estimates.x_min = min(min(char_boxes[0].tl().x,char_boxes[1].tl().x), char_boxes[2].tl().x);
+    triplet.estimates.x_max = max(max(char_boxes[0].br().x,char_boxes[1].br().x), char_boxes[2].br().x);
+    triplet.estimates.h_max = max(max(char_boxes[0].height,char_boxes[1].height), char_boxes[2].height);
 
-  // Fit one bottom line
-  float err = fitLineLMS(char_boxes[0].br(), char_boxes[1].br(), char_boxes[2].br(), 
-                         triplet.estimates.bottom1_a0, triplet.estimates.bottom1_a1);
+    // Fit one bottom line
+    float err = fitLineLMS(char_boxes[0].br(), char_boxes[1].br(), char_boxes[2].br(),
+                           triplet.estimates.bottom1_a0, triplet.estimates.bottom1_a1);
 
-  // Slope for all lines is the same
-  triplet.estimates.bottom2_a1 = triplet.estimates.bottom1_a1;
-  triplet.estimates.top1_a1    = triplet.estimates.bottom1_a1;
-  triplet.estimates.top2_a1    = triplet.estimates.bottom1_a1;
+    if ((triplet.estimates.bottom1_a0 == -1) && (triplet.estimates.bottom1_a1 == 0))
+        return false;
 
-  if (abs(err) > (float)triplet.estimates.h_max/6)
-  {
-    // We need two different bottom lines
-    triplet.estimates.bottom2_a0 = triplet.estimates.bottom1_a0 + err;
-  }
-  else 
-  {
-    // Second bottom line is the same
-    triplet.estimates.bottom2_a0 = triplet.estimates.bottom1_a0;
-  }
+    // Slope for all lines must be the same
+    triplet.estimates.bottom2_a1 = triplet.estimates.bottom1_a1;
+    triplet.estimates.top1_a1    = triplet.estimates.bottom1_a1;
+    triplet.estimates.top2_a1    = triplet.estimates.bottom1_a1;
 
-  // Fit one top line within the two (Y)-closer coordinates
-  int d_12 = abs(char_boxes[0].tl().y - char_boxes[1].tl().y);
-  int d_13 = abs(char_boxes[0].tl().y - char_boxes[2].tl().y);
-  int d_23 = abs(char_boxes[1].tl().y - char_boxes[2].tl().y);
-  if ((d_12<d_13) && (d_12<d_23))
-  {
-    Point p = Point((char_boxes[0].tl().x + char_boxes[1].tl().x)/2, 
-                    (char_boxes[0].tl().y + char_boxes[1].tl().y)/2);
-    triplet.estimates.top1_a0 = triplet.estimates.bottom1_a0 + 
-                                (p.y - (triplet.estimates.bottom1_a0+p.x*triplet.estimates.bottom1_a1));
-    p = char_boxes[2].tl();
-    err = (p.y - (triplet.estimates.top1_a0+p.x*triplet.estimates.top1_a1));
-  }
-  else if (d_13<d_23)
-  {
-    Point p = Point((char_boxes[0].tl().x + char_boxes[2].tl().x)/2, 
-                    (char_boxes[0].tl().y + char_boxes[2].tl().y)/2);
-    triplet.estimates.top1_a0 = triplet.estimates.bottom1_a0 + 
-                                (p.y - (triplet.estimates.bottom1_a0+p.x*triplet.estimates.bottom1_a1));
-    p = char_boxes[1].tl();
-    err = (p.y - (triplet.estimates.top1_a0+p.x*triplet.estimates.top1_a1));
-  }
-  else
-  {
-    Point p = Point((char_boxes[1].tl().x + char_boxes[2].tl().x)/2, 
-                    (char_boxes[1].tl().y + char_boxes[2].tl().y)/2);
-    triplet.estimates.top1_a0 = triplet.estimates.bottom1_a0 + 
-                                (p.y - (triplet.estimates.bottom1_a0+p.x*triplet.estimates.bottom1_a1));
-    p = char_boxes[0].tl();
-    err = (p.y - (triplet.estimates.top1_a0+p.x*triplet.estimates.top1_a1));
-  }
+    if (abs(err) > (float)triplet.estimates.h_max/6)
+    {
+        // We need two different bottom lines
+        triplet.estimates.bottom2_a0 = triplet.estimates.bottom1_a0 + err;
+    }
+    else
+    {
+        // Second bottom line is the same
+        triplet.estimates.bottom2_a0 = triplet.estimates.bottom1_a0;
+    }
 
-  if (abs(err) > (float)triplet.estimates.h_max/6)
-  {
-    // We need two different top lines
-    triplet.estimates.top2_a0 = triplet.estimates.top1_a0 + err;
-  }
-  else 
-  {
-    // Second top line is the same
-    triplet.estimates.top2_a0 = triplet.estimates.top1_a0;
-  }
+    // Fit one top line within the two (Y)-closer coordinates
+    int d_12 = abs(char_boxes[0].tl().y - char_boxes[1].tl().y);
+    int d_13 = abs(char_boxes[0].tl().y - char_boxes[2].tl().y);
+    int d_23 = abs(char_boxes[1].tl().y - char_boxes[2].tl().y);
+    if ((d_12<d_13) && (d_12<d_23))
+    {
+        Point p = Point((char_boxes[0].tl().x + char_boxes[1].tl().x)/2,
+                        (char_boxes[0].tl().y + char_boxes[1].tl().y)/2);
+        triplet.estimates.top1_a0 = triplet.estimates.bottom1_a0 +
+                (p.y - (triplet.estimates.bottom1_a0+p.x*triplet.estimates.bottom1_a1));
+        p = char_boxes[2].tl();
+        err = (p.y - (triplet.estimates.top1_a0+p.x*triplet.estimates.top1_a1));
+    }
+    else if (d_13<d_23)
+    {
+        Point p = Point((char_boxes[0].tl().x + char_boxes[2].tl().x)/2,
+                        (char_boxes[0].tl().y + char_boxes[2].tl().y)/2);
+        triplet.estimates.top1_a0 = triplet.estimates.bottom1_a0 +
+                (p.y - (triplet.estimates.bottom1_a0+p.x*triplet.estimates.bottom1_a1));
+        p = char_boxes[1].tl();
+        err = (p.y - (triplet.estimates.top1_a0+p.x*triplet.estimates.top1_a1));
+    }
+    else
+    {
+        Point p = Point((char_boxes[1].tl().x + char_boxes[2].tl().x)/2,
+                        (char_boxes[1].tl().y + char_boxes[2].tl().y)/2);
+        triplet.estimates.top1_a0 = triplet.estimates.bottom1_a0 +
+                (p.y - (triplet.estimates.bottom1_a0+p.x*triplet.estimates.bottom1_a1));
+        p = char_boxes[0].tl();
+        err = (p.y - (triplet.estimates.top1_a0+p.x*triplet.estimates.top1_a1));
+    }
+
+    if (abs(err) > (float)triplet.estimates.h_max/6)
+    {
+        // We need two different top lines
+        triplet.estimates.top2_a0 = triplet.estimates.top1_a0 + err;
+    }
+    else
+    {
+        // Second top line is the same
+        triplet.estimates.top2_a0 = triplet.estimates.top1_a0;
+    }
+
+    return true;
 }
 
 
+// Evaluates if a pair of regions is valid or not
+// using thresholds learned on training (defined above)
 bool isValidPair(std::vector< std::vector<ERStat> >& regions, cv::Vec2i idx1, cv::Vec2i idx2)
 {
-	Rect minarearect  = regions[idx1[0]][idx1[1]].rect | regions[idx2[0]][idx2[1]].rect;
+    Rect minarearect  = regions[idx1[0]][idx1[1]].rect | regions[idx2[0]][idx2[1]].rect;
 
-	if ( (minarearect == regions[idx1[0]][idx1[1]].rect) || (minarearect == regions[idx2[0]][idx2[1]].rect) )
-		return false;
-        
-  ERStat *i, *j;
-  if (regions[idx1[0]][idx1[1]].rect.x < regions[idx2[0]][idx2[1]].rect.x)
-  {
-    i = &regions[idx1[0]][idx1[1]];
-    j = &regions[idx2[0]][idx2[1]];
-  } else {
-    i = &regions[idx2[0]][idx2[1]];
-    j = &regions[idx1[0]][idx1[1]];
-  }
-  
-  if (j->rect.x == i->rect.x)
-    return false;
+    // Overlapping regions are not valid pair in any case
+    if ( (minarearect == regions[idx1[0]][idx1[1]].rect) ||
+         (minarearect == regions[idx2[0]][idx2[1]].rect) )
+        return false;
+
+    ERStat *i, *j;
+    if (regions[idx1[0]][idx1[1]].rect.x < regions[idx2[0]][idx2[1]].rect.x)
+    {
+        i = &regions[idx1[0]][idx1[1]];
+        j = &regions[idx2[0]][idx2[1]];
+    } else {
+        i = &regions[idx2[0]][idx2[1]];
+        j = &regions[idx1[0]][idx1[1]];
+    }
+
+    if (j->rect.x == i->rect.x)
+        return false;
     
-  float height_ratio = (float)min(i->rect.height,j->rect.height) /
-                              max(i->rect.height,j->rect.height);
-        
-  Point center_i(i->rect.x+i->rect.width/2, i->rect.y+i->rect.height/2);
-  Point center_j(j->rect.x+j->rect.width/2, j->rect.y+j->rect.height/2);
-  float centroid_angle = atan2(center_j.y-center_i.y, center_j.x-center_i.x);
-        
-  int avg_width = (i->rect.width + j->rect.width) / 2;
-  float norm_distance = (float)(j->rect.x-(i->rect.x+i->rect.width))/avg_width;
+    float height_ratio = (float)min(i->rect.height,j->rect.height) /
+                                max(i->rect.height,j->rect.height);
 
-	if (( height_ratio   < PAIR_MIN_HEIGHT_RATIO) ||
-      ( centroid_angle < PAIR_MIN_CENTROID_ANGLE) ||
-      ( centroid_angle > PAIR_MAX_CENTROID_ANGLE) ||
-      ( norm_distance  < PAIR_MIN_REGION_DIST) ||
-      ( norm_distance  > PAIR_MAX_REGION_DIST))
-		return false;
+    Point center_i(i->rect.x+i->rect.width/2, i->rect.y+i->rect.height/2);
+    Point center_j(j->rect.x+j->rect.width/2, j->rect.y+j->rect.height/2);
+    float centroid_angle = atan2(center_j.y-center_i.y, center_j.x-center_i.x);
 
-	return true;
+    int avg_width = (i->rect.width + j->rect.width) / 2;
+    float norm_distance = (float)(j->rect.x-(i->rect.x+i->rect.width))/avg_width;
+
+    if (( height_ratio   < PAIR_MIN_HEIGHT_RATIO) ||
+        ( centroid_angle < PAIR_MIN_CENTROID_ANGLE) ||
+        ( centroid_angle > PAIR_MAX_CENTROID_ANGLE) ||
+        ( norm_distance  < PAIR_MIN_REGION_DIST) ||
+        ( norm_distance  > PAIR_MAX_REGION_DIST))
+        return false;
+
+    return true;
 }
 
+// Evaluates if a set of 3 regions is valid or not
+// using thresholds learned on training (defined above)
 bool isValidTriplet(std::vector< std::vector<ERStat> >& regions, region_pair pair1, region_pair pair2, region_triplet &triplet)
 {
-	if ( (pair1.a == pair2.a)||(pair1.a == pair2.b)||(pair1.b == pair2.a)||(pair1.b == pair2.b) )
-	{
-		//it's a possible triplet, now check if it's valid
-		if (true)
-		{
-      //fill the indexes in the output tripled (sorted)
-	    if (pair1.a == pair2.a)
-      {
-        if ((regions[pair1.b[0]][pair1.b[1]].rect.x <= regions[pair1.a[0]][pair1.a[1]].rect.x) &&
-            (regions[pair2.b[0]][pair2.b[1]].rect.x <= regions[pair1.a[0]][pair1.a[1]].rect.x))
-           return false;
-        if ((regions[pair1.b[0]][pair1.b[1]].rect.x >= regions[pair1.a[0]][pair1.a[1]].rect.x) &&
-            (regions[pair2.b[0]][pair2.b[1]].rect.x >= regions[pair1.a[0]][pair1.a[1]].rect.x))
-           return false;
 
-        triplet.a = (regions[pair1.b[0]][pair1.b[1]].rect.x < regions[pair2.b[0]][pair2.b[1]].rect.x)? pair1.b : pair2.b;
-        triplet.b = pair1.a;
-        triplet.c = (regions[pair1.b[0]][pair1.b[1]].rect.x > regions[pair2.b[0]][pair2.b[1]].rect.x)? pair1.b : pair2.b;
+    if (pair1 == pair2)
+        return false;
 
-      } else if (pair1.a == pair2.b) {
-        if ((regions[pair1.b[0]][pair1.b[1]].rect.x <= regions[pair1.a[0]][pair1.a[1]].rect.x) &&
-            (regions[pair2.a[0]][pair2.a[1]].rect.x <= regions[pair1.a[0]][pair1.a[1]].rect.x))
-           return false;
-        if ((regions[pair1.b[0]][pair1.b[1]].rect.x >= regions[pair1.a[0]][pair1.a[1]].rect.x) &&
-            (regions[pair2.a[0]][pair2.a[1]].rect.x >= regions[pair1.a[0]][pair1.a[1]].rect.x))
-           return false;
-
-        triplet.a = (regions[pair1.b[0]][pair1.b[1]].rect.x < regions[pair2.a[0]][pair2.a[1]].rect.x)? pair1.b : pair2.a;
-        triplet.b = pair1.a;
-        triplet.c = (regions[pair1.b[0]][pair1.b[1]].rect.x > regions[pair2.a[0]][pair2.a[1]].rect.x)? pair1.b : pair2.a;
-
-      } else if (pair1.b == pair2.a) {
-        if ((regions[pair1.a[0]][pair1.a[1]].rect.x <= regions[pair1.b[0]][pair1.b[1]].rect.x) &&
-            (regions[pair2.b[0]][pair2.b[1]].rect.x <= regions[pair1.b[0]][pair1.b[1]].rect.x))
-           return false;
-        if ((regions[pair1.a[0]][pair1.a[1]].rect.x >= regions[pair1.b[0]][pair1.b[1]].rect.x) &&
-            (regions[pair2.b[0]][pair2.b[1]].rect.x >= regions[pair1.b[0]][pair1.b[1]].rect.x))
-           return false;
-
-        triplet.a = (regions[pair1.a[0]][pair1.a[1]].rect.x < regions[pair2.b[0]][pair2.b[1]].rect.x)? pair1.a : pair2.b;
-        triplet.b = pair1.b;
-        triplet.c = (regions[pair1.a[0]][pair1.a[1]].rect.x > regions[pair2.b[0]][pair2.b[1]].rect.x)? pair1.a : pair2.b;
-
-      } else if (pair1.b == pair2.b) {
-        if ((regions[pair1.a[0]][pair1.a[1]].rect.x <= regions[pair1.b[0]][pair1.b[1]].rect.x) &&
-            (regions[pair2.a[0]][pair2.a[1]].rect.x <= regions[pair1.b[0]][pair1.b[1]].rect.x))
-           return false;
-        if ((regions[pair1.a[0]][pair1.a[1]].rect.x >= regions[pair1.b[0]][pair1.b[1]].rect.x) &&
-            (regions[pair2.a[0]][pair2.a[1]].rect.x >= regions[pair1.b[0]][pair1.b[1]].rect.x))
-           return false;
-
-        triplet.a = (regions[pair1.a[0]][pair1.a[1]].rect.x < regions[pair2.a[0]][pair2.a[1]].rect.x)? pair1.a : pair2.a;
-        triplet.b = pair1.b;
-        triplet.c = (regions[pair1.a[0]][pair1.a[1]].rect.x > regions[pair2.a[0]][pair2.a[1]].rect.x)? pair1.a : pair2.a;
-
-      }
-
-		}
-
-    fitLineEstimates(regions, triplet);
-
-    if ( (triplet.estimates.bottom1_a0 < triplet.estimates.top1_a0) || 
-         (triplet.estimates.bottom1_a0 < triplet.estimates.top2_a0) || 
-         (triplet.estimates.bottom2_a0 < triplet.estimates.top1_a0) || 
-         (triplet.estimates.bottom2_a0 < triplet.estimates.top2_a0) )
-      return false; 
-
-    int central_height = min(triplet.estimates.bottom1_a0, triplet.estimates.bottom2_a0) -
-                         max(triplet.estimates.top1_a0,triplet.estimates.top2_a0);
-    int top_height     = abs(triplet.estimates.top1_a0 - triplet.estimates.top2_a0);
-    int bottom_height  = abs(triplet.estimates.bottom1_a0 - triplet.estimates.bottom2_a0);
-
-    float top_height_ratio    = (float)top_height/central_height;
-    float bottom_height_ratio = (float)bottom_height/central_height;
-
-    if ( (top_height_ratio > TRIPLET_MAX_DIST) || (bottom_height_ratio > TRIPLET_MAX_DIST) )
-      return false;
-
-    if (abs(triplet.estimates.bottom1_a1) > TRIPLET_MAX_SLOPE)
-      return false;
-
-		return true;
-	}
-
-	return false;
-}
-
-bool isValidSequence(std::vector< std::vector<ERStat> >& regions, region_sequence &sequence, region_triplet &triplet, region_sequence &new_sequence)
-{
-  // sequences are vector<Vec2i> and two line estimates one for each boundary
-  // // triplets and sequences are sorted
-  // // so first check if the given triplet t has the two end points equal to the first two points in sequence
-  //   or the two first points equal to the last two pointScene2s in sequence
-  //           // if so, the calculate the dist between line estimates and if its smaller than threshold then 
-  //           //merge the triplet in a new sequence and update the boundary line estimate
-  return false;
-}
-
-void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> >& regions,  std::vector< std::vector<Vec2i> >& groups)
-{
-
-  std::vector<Mat> src;
-  _src.getMatVector(src);
-
-  CV_Assert ( !src.empty() );
-  CV_Assert ( src.size() == regions.size() );
-
-  size_t num_channels = src.size();
-	
-	std::vector< cv::Vec2i > all_regions;
-	std::vector< region_pair > valid_pairs;
-
-	//store indices to regions in a single vector
-	for(size_t c=0; c<num_channels; c++)
-	{
-		for(size_t r=0; r<regions[c].size(); r++)
-		{
-			all_regions.push_back(Vec2i(c,r));
-		}
-	}
-
-	//check every possible pair of regions
-	for (size_t i=0; i<all_regions.size(); i++)
-	{
-		for (size_t j=i+1; j<all_regions.size(); j++)
-		{
-			// check height ratio, centroid angle and region distance normalized by region width fall within a given interval
-			if (isValidPair(regions, all_regions[i],all_regions[j]))
-			{
-				valid_pairs.push_back(region_pair(all_regions[i],all_regions[j]));
-			}
-		}
-	}
-
-  cout << "GroupingNM : detected " << valid_pairs.size() << " valid pairs" << endl;
-
-	std::vector< region_triplet > valid_triplets;
-
-	//check every possible triplet of regions
-	for (size_t i=0; i<valid_pairs.size(); i++)
-	{
-		for (size_t j=i+1; j<valid_pairs.size(); j++)
-		{
-			// check colinearity rule
-			region_triplet valid_triplet(Vec2i(0,0),Vec2i(0,0),Vec2i(0,0));
-			if (isValidTriplet(regions, valid_pairs[i],valid_pairs[j], valid_triplet))
-			{
-				valid_triplets.push_back(valid_triplet);
-			}
-		}
-	}
-	
-  cout << "GroupingNM : detected " << valid_triplets.size() << " valid triplets" << endl;
-
-  vector<region_sequence> valid_sequences;
-  vector<region_sequence> pending_sequences;
-
-	for (size_t i=0; i<valid_triplets.size(); i++)
-	{
-    pending_sequences.push_back(region_sequence(valid_triplets[i]));
-  }
-
-  int counter = 4;
-  while(!pending_sequences.empty())
-  {
-    cout << "GroupingNM : we have " << pending_sequences.size() << " sequences of " << counter-1 << " regions." << endl;
-    cout << "GroupingNM : searching for sequences of " << counter << " regions." << endl;
-    vector<region_sequence> tmp_pending_sequences;
-	  for (size_t i=0; i<pending_sequences.size(); i++)
+    // At least one region in common is needed
+    if ( (pair1.a == pair2.a)||(pair1.a == pair2.b)||(pair1.b == pair2.a)||(pair1.b == pair2.b) )
     {
-	    for (size_t j=0; j<valid_triplets.size(); j++)
-	    {
-        region_sequence new_sequence(valid_triplets[j]);
-        if (isValidSequence(regions, pending_sequences[i], valid_triplets[j], new_sequence))
+
+        //fill the indexes in the output tripled (sorted)
+        if (pair1.a == pair2.a)
         {
-          valid_sequences.push_back(new_sequence);
-          tmp_pending_sequences.push_back(new_sequence);
+            if ((regions[pair1.b[0]][pair1.b[1]].rect.x <= regions[pair1.a[0]][pair1.a[1]].rect.x) &&
+                    (regions[pair2.b[0]][pair2.b[1]].rect.x <= regions[pair1.a[0]][pair1.a[1]].rect.x))
+                return false;
+            if ((regions[pair1.b[0]][pair1.b[1]].rect.x >= regions[pair1.a[0]][pair1.a[1]].rect.x) &&
+                    (regions[pair2.b[0]][pair2.b[1]].rect.x >= regions[pair1.a[0]][pair1.a[1]].rect.x))
+                return false;
+
+            triplet.a = (regions[pair1.b[0]][pair1.b[1]].rect.x <
+                         regions[pair2.b[0]][pair2.b[1]].rect.x)? pair1.b : pair2.b;
+            triplet.b = pair1.a;
+            triplet.c = (regions[pair1.b[0]][pair1.b[1]].rect.x >
+                         regions[pair2.b[0]][pair2.b[1]].rect.x)? pair1.b : pair2.b;
+
+        } else if (pair1.a == pair2.b) {
+            if ((regions[pair1.b[0]][pair1.b[1]].rect.x <= regions[pair1.a[0]][pair1.a[1]].rect.x) &&
+                    (regions[pair2.a[0]][pair2.a[1]].rect.x <= regions[pair1.a[0]][pair1.a[1]].rect.x))
+                return false;
+            if ((regions[pair1.b[0]][pair1.b[1]].rect.x >= regions[pair1.a[0]][pair1.a[1]].rect.x) &&
+                    (regions[pair2.a[0]][pair2.a[1]].rect.x >= regions[pair1.a[0]][pair1.a[1]].rect.x))
+                return false;
+
+            triplet.a = (regions[pair1.b[0]][pair1.b[1]].rect.x <
+                         regions[pair2.a[0]][pair2.a[1]].rect.x)? pair1.b : pair2.a;
+            triplet.b = pair1.a;
+            triplet.c = (regions[pair1.b[0]][pair1.b[1]].rect.x >
+                         regions[pair2.a[0]][pair2.a[1]].rect.x)? pair1.b : pair2.a;
+
+        } else if (pair1.b == pair2.a) {
+            if ((regions[pair1.a[0]][pair1.a[1]].rect.x <= regions[pair1.b[0]][pair1.b[1]].rect.x) &&
+                    (regions[pair2.b[0]][pair2.b[1]].rect.x <= regions[pair1.b[0]][pair1.b[1]].rect.x))
+                return false;
+            if ((regions[pair1.a[0]][pair1.a[1]].rect.x >= regions[pair1.b[0]][pair1.b[1]].rect.x) &&
+                    (regions[pair2.b[0]][pair2.b[1]].rect.x >= regions[pair1.b[0]][pair1.b[1]].rect.x))
+                return false;
+
+            triplet.a = (regions[pair1.a[0]][pair1.a[1]].rect.x <
+                         regions[pair2.b[0]][pair2.b[1]].rect.x)? pair1.a : pair2.b;
+            triplet.b = pair1.b;
+            triplet.c = (regions[pair1.a[0]][pair1.a[1]].rect.x >
+                         regions[pair2.b[0]][pair2.b[1]].rect.x)? pair1.a : pair2.b;
+
+        } else if (pair1.b == pair2.b) {
+            if ((regions[pair1.a[0]][pair1.a[1]].rect.x <= regions[pair1.b[0]][pair1.b[1]].rect.x) &&
+                    (regions[pair2.a[0]][pair2.a[1]].rect.x <= regions[pair1.b[0]][pair1.b[1]].rect.x))
+                return false;
+            if ((regions[pair1.a[0]][pair1.a[1]].rect.x >= regions[pair1.b[0]][pair1.b[1]].rect.x) &&
+                    (regions[pair2.a[0]][pair2.a[1]].rect.x >= regions[pair1.b[0]][pair1.b[1]].rect.x))
+                return false;
+
+            triplet.a = (regions[pair1.a[0]][pair1.a[1]].rect.x <
+                         regions[pair2.a[0]][pair2.a[1]].rect.x)? pair1.a : pair2.a;
+            triplet.b = pair1.b;
+            triplet.c = (regions[pair1.a[0]][pair1.a[1]].rect.x >
+                         regions[pair2.a[0]][pair2.a[1]].rect.x)? pair1.a : pair2.a;
+
         }
-      }
+
+
+
+        if ( (regions[triplet.a[0]][triplet.a[1]].rect.x == regions[triplet.b[0]][triplet.b[1]].rect.x) &&
+             (regions[triplet.a[0]][triplet.a[1]].rect.x == regions[triplet.c[0]][triplet.c[1]].rect.x) )
+            return false;
+
+        if ( (regions[triplet.a[0]][triplet.a[1]].rect.br().x == regions[triplet.b[0]][triplet.b[1]].rect.br().x) &&
+             (regions[triplet.a[0]][triplet.a[1]].rect.br().x == regions[triplet.c[0]][triplet.c[1]].rect.br().x) )
+            return false;
+
+
+        if (!fitLineEstimates(regions, triplet))
+            return false;
+
+        if ( (triplet.estimates.bottom1_a0 < triplet.estimates.top1_a0) ||
+             (triplet.estimates.bottom1_a0 < triplet.estimates.top2_a0) ||
+             (triplet.estimates.bottom2_a0 < triplet.estimates.top1_a0) ||
+             (triplet.estimates.bottom2_a0 < triplet.estimates.top2_a0) )
+            return false;
+
+        int central_height = min(triplet.estimates.bottom1_a0, triplet.estimates.bottom2_a0) -
+                             max(triplet.estimates.top1_a0,triplet.estimates.top2_a0);
+        int top_height     = abs(triplet.estimates.top1_a0 - triplet.estimates.top2_a0);
+        int bottom_height  = abs(triplet.estimates.bottom1_a0 - triplet.estimates.bottom2_a0);
+
+        if (central_height == 0)
+            return false;
+
+        float top_height_ratio    = (float)top_height/central_height;
+        float bottom_height_ratio = (float)bottom_height/central_height;
+
+        if ( (top_height_ratio > TRIPLET_MAX_DIST) || (bottom_height_ratio > TRIPLET_MAX_DIST) )
+            return false;
+
+        if (abs(triplet.estimates.bottom1_a1) > TRIPLET_MAX_SLOPE)
+            return false;
+
+        return true;
     }
-    tmp_pending_sequences.swap(pending_sequences);
-    counter++;
-  }
-  
 
-	//TODO remove this, it is only to visualize 
-  Mat lines = Mat::zeros(src[0].rows+2,src[0].cols+2,CV_8UC3);
-	for (size_t i=0; i<valid_triplets.size(); i++)
-	{
-    ERStat *a,*b,*c;
-    a = &regions[valid_triplets[i].a[0]][valid_triplets[i].a[1]];
-    b = &regions[valid_triplets[i].b[0]][valid_triplets[i].b[1]];
-    c = &regions[valid_triplets[i].c[0]][valid_triplets[i].c[1]];
-    Point center_a(a->rect.x+a->rect.width/2, a->rect.y+a->rect.height/2);
-    Point center_b(b->rect.x+b->rect.width/2, b->rect.y+b->rect.height/2);
-    Point center_c(c->rect.x+c->rect.width/2, c->rect.y+c->rect.height/2);
+    return false;
+}
 
-    line(lines,center_a,center_b, Scalar(0,0,255),2);
-    line(lines,center_b,center_c, Scalar(0,0,255),2);
-/*
-          Mat drawing = Mat::zeros( lines.size(), CV_8UC3);
+// Evaluates if a set of more than 3 regions is valid or not
+// using thresholds learned on training (defined above)
+bool isValidSequence(region_sequence &sequence1, region_sequence &sequence2)
+{
+    for (size_t i=0; i<sequence2.triplets.size(); i++)
+    {
+        for (size_t j=0; j<sequence1.triplets.size(); j++)
+        {
+            if (distanceLinesEstimates(sequence2.triplets[i].estimates,
+                                       sequence1.triplets[j].estimates) > SEQUENCE_MAX_TRIPLET_DIST)
+                return false;
+        }
+    }
 
-          rectangle(drawing, a->rect.tl(), a->rect.br(), Scalar(255,0,0));
-          rectangle(drawing, b->rect.tl(), b->rect.br(), Scalar(255,0,0));
-          rectangle(drawing, c->rect.tl(), c->rect.br(), Scalar(255,0,0));
+    return true;
+}
 
-          line(drawing,center_a,center_b, Scalar(0,0,255));
-          line(drawing,center_b,center_c, Scalar(0,0,255));
 
-          line(drawing, Point(0,(int)valid_triplets[i].estimates.bottom1_a0), 
-                        Point(drawing.cols,(int)(valid_triplets[i].estimates.bottom1_a0+valid_triplets[i].estimates.bottom1_a1*drawing.cols)), Scalar(0,255,0));
-          line(drawing, Point(0,(int)valid_triplets[i].estimates.bottom2_a0), 
-                        Point(drawing.cols,(int)(valid_triplets[i].estimates.bottom2_a0+valid_triplets[i].estimates.bottom2_a1*drawing.cols)), Scalar(0,255,0));
-          line(drawing, Point(0,(int)valid_triplets[i].estimates.top1_a0), 
-                        Point(drawing.cols,(int)(valid_triplets[i].estimates.top1_a0+valid_triplets[i].estimates.top1_a1*drawing.cols)), Scalar(0,255,0));
-          line(drawing, Point(0,(int)valid_triplets[i].estimates.top2_a0), 
-                        Point(drawing.cols,(int)(valid_triplets[i].estimates.top2_a0+valid_triplets[i].estimates.top2_a1*drawing.cols)), Scalar(0,255,0));
+// Takes as input the set of ER's extracted by ERFilter
+// then finds for all valid pairs and triplets.
+// in regions the set of ER's extracted by ERFilter
+// in _src the channels from which the ER's were extracted
+// out sets of regions, each one represents a possible text line
+void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> >& regions,
+                  std::vector< std::vector<Vec2i> >& groups)
+{
 
-          imshow( "line estimates", drawing );
-          waitKey(0);*/
+    std::vector<Mat> src;
+    _src.getMatVector(src);
 
-  }
-  imshow("lines",lines);
-	
+    CV_Assert ( !src.empty() );
+    CV_Assert ( src.size() == regions.size() );
+
+    size_t num_channels = src.size();
+
+    std::vector< cv::Vec2i > all_regions;
+    std::vector< region_pair > valid_pairs;
+
+    //store indices to regions in a single vector
+    for(size_t c=0; c<num_channels; c++)
+    {
+        for(size_t r=0; r<regions[c].size(); r++)
+        {
+            all_regions.push_back(Vec2i(c,r));
+        }
+    }
+
+    //check every possible pair of regions
+    for (size_t i=0; i<all_regions.size(); i++)
+    {
+        for (size_t j=i+1; j<all_regions.size(); j++)
+        {
+            // check height ratio, centroid angle and region distance normalized by region width
+            // fall within a given interval
+            if (isValidPair(regions, all_regions[i],all_regions[j]))
+            {
+                valid_pairs.push_back(region_pair(all_regions[i],all_regions[j]));
+                //cout << "Valid pair (" << all_regions[i][0] << ","  << all_regions[i][1] << ") (" << all_regions[j][0] << ","  << all_regions[j][1] << ")" << endl;
+            }
+        }
+    }
+
+    cout << "GroupingNM : detected " << valid_pairs.size() << " valid pairs" << endl;
+
+    std::vector< region_triplet > valid_triplets;
+
+    //check every possible triplet of regions
+    for (size_t i=0; i<valid_pairs.size(); i++)
+    {
+        for (size_t j=i+1; j<valid_pairs.size(); j++)
+        {
+            // check colinearity rules
+            region_triplet valid_triplet(Vec2i(0,0),Vec2i(0,0),Vec2i(0,0));
+            if (isValidTriplet(regions, valid_pairs[i],valid_pairs[j], valid_triplet))
+            {
+                valid_triplets.push_back(valid_triplet);
+                //cout << "Valid triplet (" << valid_triplet.a[1] << "," <<  valid_triplet.b[1] << "," <<  valid_triplet.c[1] << ")" << endl;
+            }
+        }
+    }
+
+    cout << "GroupingNM : detected " << valid_triplets.size() << " valid triplets" << endl;
+
+    vector<region_sequence> valid_sequences;
+    vector<region_sequence> pending_sequences;
+
+    for (size_t i=0; i<valid_triplets.size(); i++)
+    {
+        pending_sequences.push_back(region_sequence(valid_triplets[i]));
+    }
+
+
+    for (size_t i=0; i<pending_sequences.size(); i++)
+    {
+        bool expanded = false;
+        for (size_t j=i+1; j<pending_sequences.size(); j++)
+        {
+            if (isValidSequence(pending_sequences[i], pending_sequences[j]))
+            {
+                expanded = true;
+                pending_sequences[i].triplets.insert(pending_sequences[i].triplets.begin(), pending_sequences[j].triplets.begin(), pending_sequences[j].triplets.end());
+                pending_sequences.erase(pending_sequences.begin()+j);
+                j--;
+            }
+        }
+        if (expanded)
+        {
+            valid_sequences.push_back(pending_sequences[i]);
+        }
+    }
+
+    cout << "GroupingNM : we have " << valid_sequences.size() << " sequences." << endl;
+
+    //TODO remove this, it is only to visualize for debug
+    Mat lines = Mat::zeros(src[0].rows+2,src[0].cols+2,CV_8UC3);
+    for (size_t i=0; i<valid_sequences.size(); i++)
+    {
+        for (size_t j=0; j<valid_sequences[i].triplets.size(); j++)
+        {
+            ERStat *a,*b,*c;
+            a = &regions[valid_sequences[i].triplets[j].a[0]][valid_sequences[i].triplets[j].a[1]];
+            b = &regions[valid_sequences[i].triplets[j].b[0]][valid_sequences[i].triplets[j].b[1]];
+            c = &regions[valid_sequences[i].triplets[j].c[0]][valid_sequences[i].triplets[j].c[1]];
+
+            Point center_a(a->rect.x+a->rect.width/2, a->rect.y+a->rect.height/2);
+            Point center_b(b->rect.x+b->rect.width/2, b->rect.y+b->rect.height/2);
+            Point center_c(c->rect.x+c->rect.width/2, c->rect.y+c->rect.height/2);
+
+            line(lines,center_a,center_b, Scalar(0,0,255),2);
+            line(lines,center_b,center_c, Scalar(0,0,255),2);
+        }
+
+    }
+    for (size_t i=1; i<regions[0].size(); i++)
+    {
+        rectangle(lines, regions[0][i].rect.tl(), regions[0][i].rect.br(), Scalar(255,0,0));
+        char buff[5]; char *buff_ptr = buff;
+        sprintf(buff, "%d", i);
+        if (i==6)
+            putText(lines,string(buff_ptr),regions[0][i].rect.tl()+Point(15,-1),FONT_HERSHEY_SIMPLEX,1,Scalar(255,0,0));
+        else
+            putText(lines,string(buff_ptr),regions[0][i].rect.tl(),FONT_HERSHEY_SIMPLEX,1,Scalar(255,0,0));
+    }
+    imshow("lines",lines);
+
 }
 
 int  main(int argc, const char * argv[])
@@ -581,12 +688,17 @@ int  main(int argc, const char * argv[])
 
     // Extract channels to be processed individually
     vector<Mat> channels;
-    computeNMChannels(src, channels);
+    Mat grey;
+    cvtColor(src, grey, COLOR_RGBA2GRAY);
+    grey = 255-grey;
+    channels.push_back(grey);
 
-    int cn = (int)channels.size();
+    //computeNMChannels(src, channels);
+
+    //int cn = (int)channels.size();
     // Append negative channels to detect ER- (bright regions over dark background)
-    for (int c = 0; c < cn-1; c++)
-        channels.push_back(255-channels[c]);
+    //for (int c = 0; c < cn-1; c++)
+    //    channels.push_back(255-channels[c]);
 
     // Create ERFilter objects with the 1st and 2nd stage default classifiers
     Ptr<ERFilter> er_filter1 = createERFilterNM1(loadClassifierNM1("trained_classifierNM1.xml"),8,0.00015,0.13,0.2,true,0.1);
@@ -602,14 +714,14 @@ int  main(int argc, const char * argv[])
 	    	double t = (double)cvGetTickCount();
         er_filter1->run(channels[c], regions[c]);
 	    	t = cvGetTickCount() - t;
-	    	printf( "filter 1 done in %g ms.\n", t/((double)cvGetTickFrequency()*1000.) );
+        printf( "%d regions in total \n", regions[c].size()+er_filter1->getNumRejected());
+	    	printf( "%d regions after filter 1, done in %g ms.\n", regions[c].size(), t/((double)cvGetTickFrequency()*1000.) );
 	    	t = (double)cvGetTickCount();
         er_filter2->run(channels[c], regions[c]);
 	    	t = cvGetTickCount() - t;
-	    	printf( "filter 2 done in %g ms.\n", t/((double)cvGetTickFrequency()*1000.) );
+	    	printf( "%d regions after filter 2, done in %g ms.\n", regions[c].size(), t/((double)cvGetTickFrequency()*1000.) );
         num_regions += regions[c].size();
     }
-    cout << "In total we have " << num_regions << endl;
 
     // Detect character groups
     cout << "Grouping extracted ERs ... ";
@@ -622,6 +734,7 @@ int  main(int argc, const char * argv[])
     // draw groups
     groups_draw(src, groups);
     imshow("grouping",src);
+    imwrite("grouping.jpg",src);
 
     // Groouping using Exhaustive Search algorithm
     cout << "GroupingNM extracted ERs ... " << endl;
