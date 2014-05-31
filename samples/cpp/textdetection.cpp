@@ -32,11 +32,13 @@ void er_show(vector<Mat> &channels, vector<vector<ERStat> > &regions);
 #define PAIR_MAX_CENTROID_ANGLE   0.85
 #define PAIR_MIN_REGION_DIST    - 0.4 
 #define PAIR_MAX_REGION_DIST      2.2
+#define PAIR_MAX_INTENSITY_DIST   111
+#define PAIR_MAX_AB_DIST          54
 
 #define TRIPLET_MAX_DIST          0.9
 #define TRIPLET_MAX_SLOPE         0.3
 
-#define SEQUENCE_MAX_TRIPLET_DIST 0.3
+#define SEQUENCE_MAX_TRIPLET_DIST 0.45
 #define SEQUENCE_MIN_LENGHT       4
 
 // struct line_estimates
@@ -167,7 +169,7 @@ struct region_sequence
 
 // Evaluates if a pair of regions is valid or not
 // using thresholds learned on training (defined above)
-bool isValidPair(std::vector< std::vector<ERStat> >& regions, cv::Vec2i idx1, cv::Vec2i idx2);
+bool isValidPair(Mat &grey, Mat& lab, Mat& mask, vector<Mat> &channels, std::vector< std::vector<ERStat> >& regions, cv::Vec2i idx1, cv::Vec2i idx2);
 
 // Evaluates if a set of 3 regions is valid or not
 // using thresholds learned on training (defined above)
@@ -177,12 +179,17 @@ bool isValidTriplet(std::vector< std::vector<ERStat> >& regions, region_pair pai
 // using thresholds learned on training (defined above)
 bool isValidSequence(region_sequence &sequence1, region_sequence &sequence2);
 
+// Check if two sequences share a region in common
+bool haveCommonRegion(region_sequence &sequence1, region_sequence &sequence2);
+// Check if two triplets share a region in common
+bool haveCommonRegion(region_triplet &t1, region_triplet &t2);
+
 // Takes as input the set of ER's extracted by ERFilter
 // then finds for all valid pairs and triplets.
 // in regions the set of ER's extracted by ERFilter
 // in _src the channels from which the ER's were extracted
 // out sets of regions, each one represents a possible text line
-void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> >& regions,  std::vector< std::vector<Vec2i> >& groups);
+void erGroupingNM(cv::Mat &img, cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> >& regions,  std::vector< std::vector<Vec2i> >& groups, std::vector<Rect> &boxes);
 
 // Fit line from two points
 // out a0 is the intercept
@@ -371,7 +378,7 @@ bool fitLineEstimates(vector< vector<ERStat> > &regions, region_triplet &triplet
 
 // Evaluates if a pair of regions is valid or not
 // using thresholds learned on training (defined above)
-bool isValidPair(std::vector< std::vector<ERStat> >& regions, cv::Vec2i idx1, cv::Vec2i idx2)
+bool isValidPair(Mat &grey, Mat &lab, Mat &mask, vector<Mat> &channels, std::vector< std::vector<ERStat> >& regions, cv::Vec2i idx1, cv::Vec2i idx2)
 {
     Rect minarearect  = regions[idx1[0]][idx1[1]].rect | regions[idx2[0]][idx2[1]].rect;
 
@@ -409,6 +416,59 @@ bool isValidPair(std::vector< std::vector<ERStat> >& regions, cv::Vec2i idx1, cv
         ( norm_distance  < PAIR_MIN_REGION_DIST) ||
         ( norm_distance  > PAIR_MAX_REGION_DIST))
         return false;
+
+    if ((i->parent == NULL)||(j->parent == NULL)) // deprecate the root region
+      return false;
+
+    i = &regions[idx1[0]][idx1[1]];
+    j = &regions[idx2[0]][idx2[1]];
+
+    Mat region = mask(Rect(Point(i->rect.x,i->rect.y),
+                           Point(i->rect.br().x+2,i->rect.br().y+2)));
+    region = Scalar(0);
+
+    int newMaskVal = 255;
+    int flags = 4 + (newMaskVal << 8) + FLOODFILL_FIXED_RANGE + FLOODFILL_MASK_ONLY;
+    Rect rect;
+
+    floodFill( channels[idx1[0]](Rect(Point(i->rect.x,i->rect.y),Point(i->rect.br().x,i->rect.br().y))),
+               region, Point(i->pixel%grey.cols - i->rect.x, i->pixel/grey.cols - i->rect.y),
+               Scalar(255), &rect, Scalar(i->level), Scalar(0), flags);
+    rect.width += 2;
+    rect.height += 2;
+    Mat rect_mask = mask(Rect(i->rect.x+1,i->rect.y+1,i->rect.width,i->rect.height));
+
+    Scalar mean,std;
+    meanStdDev(grey(i->rect),mean,std,rect_mask);
+    int grey_mean1 = mean[0];
+    meanStdDev(lab(i->rect),mean,std,rect_mask);
+    float a_mean1 = mean[1];
+    float b_mean1 = mean[2];
+
+    region = mask(Rect(Point(j->rect.x,j->rect.y),
+                           Point(j->rect.br().x+2,j->rect.br().y+2)));
+    region = Scalar(0);
+
+    floodFill( channels[idx2[0]](Rect(Point(j->rect.x,j->rect.y),Point(j->rect.br().x,j->rect.br().y))),
+               region, Point(j->pixel%grey.cols - j->rect.x, j->pixel/grey.cols - j->rect.y),
+               Scalar(255), &rect, Scalar(j->level), Scalar(0), flags);
+    rect.width += 2;
+    rect.height += 2;
+    rect_mask = mask(Rect(j->rect.x+1,j->rect.y+1,j->rect.width,j->rect.height));
+
+    meanStdDev(grey(j->rect),mean,std,rect_mask);
+    int grey_mean2 = mean[0];
+    meanStdDev(lab(j->rect),mean,std,rect_mask);
+    float a_mean2 = mean[1];
+    float b_mean2 = mean[2];
+
+    if (abs(grey_mean1-grey_mean2) > PAIR_MAX_INTENSITY_DIST)
+      return false;
+
+    if (sqrt(pow(a_mean1-a_mean2,2)+pow(b_mean1-b_mean2,2)) > PAIR_MAX_AB_DIST)
+      return false;
+
+
 
     return true;
 }
@@ -545,14 +605,40 @@ bool isValidSequence(region_sequence &sequence1, region_sequence &sequence2)
     return true;
 }
 
+// Check if two triplets share a region in common
+bool haveCommonRegion(region_triplet &t1, region_triplet &t2)
+{
+    if ((t1.a==t2.a) || (t1.a==t2.b) || (t1.a==t2.c) || 
+        (t1.b==t2.a) || (t1.b==t2.b) || (t1.b==t2.c) || 
+        (t1.c==t2.a) || (t1.c==t2.b) || (t1.c==t2.c)) 
+      return true;
+
+    return false;
+}
+
+// Check if two sequences share a region in common
+bool haveCommonRegion(region_sequence &sequence1, region_sequence &sequence2)
+{
+    for (size_t i=0; i<sequence2.triplets.size(); i++)
+    {
+        for (size_t j=0; j<sequence1.triplets.size(); j++)
+        {
+            if (haveCommonRegion(sequence2.triplets[i], sequence1.triplets[j]))
+                return true;
+        }
+    }
+
+    return false;
+}
+
 
 // Takes as input the set of ER's extracted by ERFilter
 // then finds for all valid pairs and triplets.
 // in regions the set of ER's extracted by ERFilter
 // in _src the channels from which the ER's were extracted
 // out sets of regions, each one represents a possible text line
-void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> >& regions,
-                  std::vector< std::vector<Vec2i> >& groups)
+void erGroupingNM(cv::Mat &img, cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> >& regions,
+                  std::vector< std::vector<Vec2i> >& out_groups, std::vector<Rect>& out_boxes)
 {
 
     std::vector<Mat> src;
@@ -564,7 +650,6 @@ void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> 
     size_t num_channels = src.size();
 
     std::vector< cv::Vec2i > all_regions;
-    std::vector< region_pair > valid_pairs;
 
     //store indices to regions in a single vector
     for(size_t c=0; c<num_channels; c++)
@@ -575,17 +660,57 @@ void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> 
         }
     }
 
+    std::vector< region_pair > valid_pairs;
+    Mat mask = Mat::zeros(img.rows+2, img.cols+2, CV_8UC1);
+    Mat grey,lab;
+    cvtColor(img, lab, COLOR_RGB2Lab);
+    cvtColor(img, grey, COLOR_RGB2GRAY);
+
     //check every possible pair of regions
     for (size_t i=0; i<all_regions.size(); i++)
     {
+        vector<int> i_siblings;
+        int first_i_sibling_idx = valid_pairs.size();
         for (size_t j=i+1; j<all_regions.size(); j++)
         {
             // check height ratio, centroid angle and region distance normalized by region width
             // fall within a given interval
-            if (isValidPair(regions, all_regions[i],all_regions[j]))
+            if (isValidPair(grey, lab, mask, src, regions, all_regions[i],all_regions[j]))
             {
-                valid_pairs.push_back(region_pair(all_regions[i],all_regions[j]));
-                //cout << "Valid pair (" << all_regions[i][0] << ","  << all_regions[i][1] << ") (" << all_regions[j][0] << ","  << all_regions[j][1] << ")" << endl;
+                bool isCycle = false;
+                for (size_t k=0; k<i_siblings.size(); k++)
+                {
+                  if (isValidPair(grey, lab, mask, src, regions, all_regions[j],all_regions[i_siblings[k]]))
+                  {
+                    // choose as sibling the closer and not the first that was "paired" with i
+                    Point i_center = Point( regions[all_regions[i][0]][all_regions[i][1]].rect.x +
+                                            regions[all_regions[i][0]][all_regions[i][1]].rect.width/2,
+                                            regions[all_regions[i][0]][all_regions[i][1]].rect.y +
+                                            regions[all_regions[i][0]][all_regions[i][1]].rect.height/2 );
+                    Point j_center = Point( regions[all_regions[j][0]][all_regions[j][1]].rect.x +
+                                            regions[all_regions[j][0]][all_regions[j][1]].rect.width/2,
+                                            regions[all_regions[j][0]][all_regions[j][1]].rect.y +
+                                            regions[all_regions[j][0]][all_regions[j][1]].rect.height/2 );
+                    Point k_center = Point( regions[all_regions[i_siblings[k]][0]][all_regions[i_siblings[k]][1]].rect.x +
+                                            regions[all_regions[i_siblings[k]][0]][all_regions[i_siblings[k]][1]].rect.width/2,
+                                            regions[all_regions[i_siblings[k]][0]][all_regions[i_siblings[k]][1]].rect.y +
+                                            regions[all_regions[i_siblings[k]][0]][all_regions[i_siblings[k]][1]].rect.height/2 );
+
+                    if ( norm(i_center - j_center) < norm(i_center - k_center) )
+                    {
+                      valid_pairs[first_i_sibling_idx+k] = region_pair(all_regions[i],all_regions[j]);
+                      i_siblings[k] = j;
+                    }
+                    isCycle = true;
+                    break;
+                  }
+                }
+                if (!isCycle)
+                {
+                  valid_pairs.push_back(region_pair(all_regions[i],all_regions[j]));
+                  i_siblings.push_back(j);
+                  //cout << "Valid pair (" << all_regions[i][0] << ","  << all_regions[i][1] << ") (" << all_regions[j][0] << ","  << all_regions[j][1] << ")" << endl;
+                }
             }
         }
     }
@@ -639,14 +764,81 @@ void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> 
         }
     }
 
-    cout << "GroupingNM : we have " << valid_sequences.size() << " sequences." << endl;
-
-    //TODO remove this, it is only to visualize for debug
-    Mat lines = Mat::zeros(src[0].rows+2,src[0].cols+2,CV_8UC3);
+    // remove a sequence if one its regions is already grouped within a longer seq
     for (size_t i=0; i<valid_sequences.size(); i++)
     {
+        for (size_t j=i+1; j<valid_sequences.size(); j++)
+        {
+          if (haveCommonRegion(valid_sequences[i],valid_sequences[j]))
+          {
+            if (valid_sequences[i].triplets.size() < valid_sequences[j].triplets.size())
+            {
+              valid_sequences.erase(valid_sequences.begin()+i);
+              i--;
+              break;
+            }
+            else
+            {
+              valid_sequences.erase(valid_sequences.begin()+j);
+              j--;
+            }
+          }
+        }
+    }
+
+
+    //cout << "GroupingNM : detected " << valid_sequences.size() << " sequences." << endl;
+
+
+    // Prepare the sequences for output
+    for (size_t i=0; i<valid_sequences.size(); i++)
+    {
+        vector<Point> bbox_points;
+        vector<Vec2i> group_regions;
+
         for (size_t j=0; j<valid_sequences[i].triplets.size(); j++)
         {
+            size_t prev_size = group_regions.size();
+            if(find(group_regions.begin(), group_regions.end(), valid_sequences[i].triplets[j].a) == group_regions.end())
+              group_regions.push_back(valid_sequences[i].triplets[j].a);
+            if(find(group_regions.begin(), group_regions.end(), valid_sequences[i].triplets[j].b) == group_regions.end())
+              group_regions.push_back(valid_sequences[i].triplets[j].b);
+            if(find(group_regions.begin(), group_regions.end(), valid_sequences[i].triplets[j].c) == group_regions.end())
+              group_regions.push_back(valid_sequences[i].triplets[j].c);
+
+            for (size_t k=prev_size; k<group_regions.size(); k++)
+            {
+                bbox_points.push_back(regions[group_regions[k][0]][group_regions[k][1]].rect.tl());
+                bbox_points.push_back(regions[group_regions[k][0]][group_regions[k][1]].rect.br());
+            }
+        }
+
+        out_groups.push_back(group_regions);
+        out_boxes.push_back(boundingRect(bbox_points));
+        
+    }
+
+
+    //TODO remove this, it is only to visualize for debug
+
+    /*Mat lines = Mat::zeros(src[0].rows+2,src[0].cols+2,CV_8UC3);
+    for (size_t c=0; c<regions.size(); c++)
+    for (size_t i=1; i<regions[c].size(); i++)
+    {
+        rectangle(lines, regions[c][i].rect.tl(), regions[c][i].rect.br(), Scalar(255,0,0));
+        char buff[5]; char *buff_ptr = buff;
+        sprintf(buff, "%d", i);
+        putText(lines,string(buff_ptr),regions[c][i].rect.tl(),FONT_HERSHEY_SIMPLEX,1,Scalar(255,0,0));
+    }
+    for (size_t i=0; i<valid_sequences.size(); i++)
+    {
+      lines = 0;
+        cout << " Sequence with " << valid_sequences[i].triplets.size() << " triplets." << endl;
+        for (size_t j=0; j<valid_sequences[i].triplets.size(); j++)
+        {
+          cout << " (" << valid_sequences[i].triplets[j].a[1] << "," << valid_sequences[i].triplets[j].b[1] << "," << valid_sequences[i].triplets[j].c[1] << ") " ; 
+
+
             ERStat *a,*b,*c;
             a = &regions[valid_sequences[i].triplets[j].a[0]][valid_sequences[i].triplets[j].a[1]];
             b = &regions[valid_sequences[i].triplets[j].b[0]][valid_sequences[i].triplets[j].b[1]];
@@ -659,19 +851,12 @@ void erGroupingNM(cv::InputArrayOfArrays _src, std::vector< std::vector<ERStat> 
             line(lines,center_a,center_b, Scalar(0,0,255),2);
             line(lines,center_b,center_c, Scalar(0,0,255),2);
         }
+        cout << endl;
 
-    }
-    for (size_t i=1; i<regions[0].size(); i++)
-    {
-        rectangle(lines, regions[0][i].rect.tl(), regions[0][i].rect.br(), Scalar(255,0,0));
-        char buff[5]; char *buff_ptr = buff;
-        sprintf(buff, "%d", i);
-        if (i==6)
-            putText(lines,string(buff_ptr),regions[0][i].rect.tl()+Point(15,-1),FONT_HERSHEY_SIMPLEX,1,Scalar(255,0,0));
-        else
-            putText(lines,string(buff_ptr),regions[0][i].rect.tl(),FONT_HERSHEY_SIMPLEX,1,Scalar(255,0,0));
-    }
     imshow("lines",lines);
+    waitKey(0);
+
+    }*/
 
 }
 
@@ -688,12 +873,8 @@ int  main(int argc, const char * argv[])
 
     // Extract channels to be processed individually
     vector<Mat> channels;
-    Mat grey;
-    cvtColor(src, grey, COLOR_RGBA2GRAY);
-    grey = 255-grey;
-    channels.push_back(grey);
 
-    //computeNMChannels(src, channels);
+    computeNMChannels(src, channels);
 
     //int cn = (int)channels.size();
     // Append negative channels to detect ER- (bright regions over dark background)
@@ -715,34 +896,44 @@ int  main(int argc, const char * argv[])
         er_filter1->run(channels[c], regions[c]);
 	    	t = cvGetTickCount() - t;
         printf( "%d regions in total \n", regions[c].size()+er_filter1->getNumRejected());
-	    	printf( "%d regions after filter 1, done in %g ms.\n", regions[c].size(), t/((double)cvGetTickFrequency()*1000.) );
+            printf( "%d regions after filter 1, done in %g ms.\n", regions[c].size(), t/((double)cvGetTickFrequency()*1000.) );
 	    	t = (double)cvGetTickCount();
         er_filter2->run(channels[c], regions[c]);
 	    	t = cvGetTickCount() - t;
-	    	printf( "%d regions after filter 2, done in %g ms.\n", regions[c].size(), t/((double)cvGetTickFrequency()*1000.) );
+            printf( "%d regions after filter 2, done in %g ms.\n", regions[c].size(), t/((double)cvGetTickFrequency()*1000.) );
         num_regions += regions[c].size();
     }
 
     // Detect character groups
-    cout << "Grouping extracted ERs ... ";
+    cout << "GroupingGK " << num_regions << " extracted ERs ... ";
     vector<Rect> groups;
 	  double t = (double)cvGetTickCount();
     erGrouping(channels, regions, "trained_classifier_erGrouping.xml", 0.5, groups);
 	  t = cvGetTickCount() - t;
-	  printf( "Grouping done in %g ms.\n", t/((double)cvGetTickFrequency()*1000.) );
+	  printf( "GroupingGK done in %g ms.\n", t/((double)cvGetTickFrequency()*1000.) );
 
     // draw groups
-    groups_draw(src, groups);
-    imshow("grouping",src);
-    imwrite("grouping.jpg",src);
+    Mat imgroups;
+    src.copyTo(imgroups);
+    groups_draw(imgroups, groups);
+    imshow("groupingGK",imgroups);
+    imwrite("groupingGK.jpg",imgroups);
 
     // Groouping using Exhaustive Search algorithm
-    cout << "GroupingNM extracted ERs ... " << endl;
+    cout << "GroupingNM " << num_regions << " extracted ERs ... ";
     vector< vector<Vec2i> > nm_groups;
+    vector<Rect> nm_boxes;
 	  t = (double)cvGetTickCount();
-    erGroupingNM(channels, regions, nm_groups);
+    erGroupingNM(src, channels, regions, nm_groups, nm_boxes);
 	  t = cvGetTickCount() - t;
 	  printf( "GroupingNM done in %g ms.\n", t/((double)cvGetTickFrequency()*1000.) );
+
+    // draw groups
+    src.copyTo(imgroups);
+    groups_draw(imgroups, nm_boxes);
+    imshow("groupingNM",imgroups);
+    imwrite("groupingNM.jpg",imgroups);
+
 
     cout << "Done!" << endl << endl;
     cout << "Press 'e' to show the extracted Extremal Regions, any other key to exit." << endl << endl;
@@ -785,9 +976,12 @@ void er_show(vector<Mat> &channels, vector<vector<ERStat> > &regions)
 {
     for (int c=0; c<(int)channels.size(); c++)
     {
+        char buff[10]; char *buff_ptr = buff;
+        sprintf(buff, "channel %d", c);
         Mat dst = Mat::zeros(channels[0].rows+2,channels[0].cols+2,CV_8UC1);
         for (int r=0; r<(int)regions[c].size(); r++)
         {
+            dst = Mat::zeros(channels[0].rows+2,channels[0].cols+2,CV_8UC1);
             ERStat er = regions[c][r];
             if (er.parent != NULL) // deprecate the root region
             {
@@ -796,10 +990,14 @@ void er_show(vector<Mat> &channels, vector<vector<ERStat> > &regions)
                 floodFill(channels[c],dst,Point(er.pixel%channels[c].cols,er.pixel/channels[c].cols),
                           Scalar(255),0,Scalar(er.level),Scalar(0),flags);
             }
-        }
-        char buff[10]; char *buff_ptr = buff;
-        sprintf(buff, "channel %d", c);
+        char buff2[13]; char *buff_ptr2 = buff2;
+        sprintf(buff2, "region%d.jpg", r);
+
+        imwrite(buff_ptr2,dst);
+
         imshow(buff_ptr, dst);
+        waitKey(0);
+        }
     }
     waitKey(-1);
 }
