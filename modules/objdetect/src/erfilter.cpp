@@ -1448,7 +1448,7 @@ long double Minibox::volume ()
 }
 
 
-#define MAX_NUM_FEATURES 9
+#define MAX_GROUP_ELEMENTS 50
 
 
 /*  Hierarchical Clustering classes and functions */
@@ -2072,39 +2072,6 @@ private:
     }
 };
 
-/*Clustering for the "stored matrix approach": the input is the array of pairwise dissimilarities*/
-static int linkage(double *D, int N, double * Z)
-{
-    CV_Assert(N >=1);
-    CV_Assert(N <= MAX_INDEX/4);
-
-    try
-    {
-
-        cluster_result Z2(N-1);
-        auto_array_ptr<int_fast32_t> members;
-        // The distance update formula needs the number of data points in a cluster.
-        members.init(N, 1);
-        NN_chain_core<METHOD_METR_AVERAGE, int_fast32_t>(N, D, members, Z2);
-        generate_dendrogram(Z, Z2, N);
-
-    } // try
-    catch (const std::bad_alloc&)
-    {
-        CV_Error(CV_StsNoMem, "Not enough Memory for erGrouping hierarchical clustering structures!");
-    }
-    catch(const std::exception&)
-    {
-        CV_Error(CV_StsError, "Uncaught exception in erGrouping!");
-    }
-    catch(...)
-    {
-        CV_Error(CV_StsError, "C++ exception (unknown reason) in erGrouping!");
-    }
-    return 0;
-
-}
-
 /*Clustering for the "stored data approach": the input are points in a vector space.*/
 static int linkage_vector(double *X, int N, int dim, double * Z, unsigned char method, unsigned char metric)
 {
@@ -2137,6 +2104,25 @@ static int linkage_vector(double *X, int N, int dim, double * Z, unsigned char m
     return 0;
 }
 
+// ERFeatures structure stores additional features for a given ERStat instance
+struct ERFeatures
+{
+    int area;
+    Point center;
+    Rect  rect;
+    float intensity_mean;  ///< mean intensity of the whole region
+    float intensity_std;  ///< intensity standard deviation of the whole region
+    float boundary_intensity_mean;  ///< mean intensity of the boundary of the region
+    float boundary_intensity_std;  ///< intensity standard deviation of the boundary of the region
+    double stroke_mean;  ///< mean stroke width approximation of the whole region
+    double stroke_std;  ///< stroke standard deviation of the whole region
+    double gradient_mean;  ///< mean gradient magnitude of the whole region
+    double gradient_std;  ///< gradient magnitude standard deviation of the whole region
+    double axial_ratio;
+    double convex_hull_ratio;
+    int convexities;
+    double hu_moments[7];
+};
 
 /*  Maximal Meaningful Clusters Detection */
 
@@ -2154,6 +2140,7 @@ struct HCluster{
     int min_nfa_in_branch;  // min nfa detected within the chilhood
     int node1;
     int node2;
+    double probability;      //the probability of this group of being a text group
 };
 
 class MaxMeaningfulClustering
@@ -2163,24 +2150,43 @@ public:
     unsigned char metric_;
 
     /// Constructor.
-    MaxMeaningfulClustering(unsigned char method, unsigned char metric){ method_=method; metric_=metric; }
+    MaxMeaningfulClustering(unsigned char _method, unsigned char _metric, vector<ERFeatures> &_regions,
+                            Size _imsize, const std::string &filename, double _minProbability);
 
     void operator()(double *data, unsigned int num, int dim, unsigned char method,
                     unsigned char metric, vector< vector<int> > *meaningful_clusters);
-    void operator()(double *data, unsigned int num, unsigned char method,
-                    vector< vector<int> > *meaningful_clusters);
 
 private:
+    double minProbability;
+    CvBoost group_boost;
+    vector<ERFeatures> &regions;
+    Size imsize;
+
     /// Helper functions
     void build_merge_info(double *dendogram, double *data, int num, int dim, bool use_full_merge_rule,
                           vector<HCluster> *merge_info, vector< vector<int> > *meaningful_clusters);
-    void build_merge_info(double *dendogram, int num, vector<HCluster> *merge_info,
-                          vector< vector<int> > *meaningful_clusters);
 
-    /// Number of False Alarms
+    /// Calculate the Number of False Alarms
     int nfa(float sigma, int k, int N);
 
+    /// Calculate the probability of a group being a text group
+    double probability(vector<int> &elements);
+
 };
+
+MaxMeaningfulClustering::MaxMeaningfulClustering(unsigned char _method, unsigned char _metric, vector<ERFeatures> &_regions,
+                                                 Size _imsize, const std::string &filename, double _minProbability):
+                                                 method_(_method), metric_(_metric), regions(_regions), imsize(_imsize)
+{
+
+    minProbability = _minProbability;
+
+    if (ifstream(filename.c_str()))
+        group_boost.load( filename.c_str(), "boost" );
+    else
+        CV_Error(CV_StsBadArg, "erGrouping: Default classifier file not found!");
+}
+
 
 void MaxMeaningfulClustering::operator()(double *data, unsigned int num, int dim, unsigned char method,
                                          unsigned char metric, vector< vector<int> > *meaningful_clusters)
@@ -2194,25 +2200,6 @@ void MaxMeaningfulClustering::operator()(double *data, unsigned int num, int dim
 
     vector<HCluster> merge_info;
     build_merge_info(Z, data, (int)num, dim, false, &merge_info, meaningful_clusters);
-
-    free(Z);
-    merge_info.clear();
-}
-
-void MaxMeaningfulClustering::operator()(double *data, unsigned int num, unsigned char method,
-                                         vector< vector<int> > *meaningful_clusters)
-{
-
-    CV_Assert(method == METHOD_METR_AVERAGE);
-
-    double *Z = (double*)malloc(((num-1)*4) * sizeof(double)); // we need 4 floats foreach sample merge.
-    if (Z == NULL)
-        CV_Error(CV_StsNoMem, "Not enough Memory for erGrouping hierarchical clustering structures!");
-
-    linkage(data, (int)num, Z);
-
-    vector<HCluster> merge_info;
-    build_merge_info(Z, (int)num, &merge_info, meaningful_clusters);
 
     free(Z);
     merge_info.clear();
@@ -2308,6 +2295,8 @@ void MaxMeaningfulClustering::build_merge_info(double *Z, double *X, int N, int 
 
         merge_info->at(i).nfa = nfa((float)merge_info->at(i).volume,
                                     merge_info->at(i).num_elem, N);
+
+        merge_info->at(i).probability = probability(merge_info->at(i).elements);
         int node1 = merge_info->at(i).node1;
         int node2 = merge_info->at(i).node2;
 
@@ -2321,13 +2310,14 @@ void MaxMeaningfulClustering::build_merge_info(double *Z, double *X, int N, int 
             if ((node1>=N)&&(node2>=N))
             {
                 // both nodes are "sets" : we must evaluate the merging condition
-                if ( ( (use_full_merge_rule) &&
-                       ((merge_info->at(i).nfa < merge_info->at(node1-N).nfa + merge_info->at(node2-N).nfa) &&
-                       (merge_info->at(i).nfa < min(merge_info->at(node1-N).min_nfa_in_branch,
+                if ( ( ( (use_full_merge_rule) &&
+                         ((merge_info->at(i).nfa < merge_info->at(node1-N).nfa + merge_info->at(node2-N).nfa) &&
+                         (merge_info->at(i).nfa < min(merge_info->at(node1-N).min_nfa_in_branch,
                                                     merge_info->at(node2-N).min_nfa_in_branch))) ) ||
-                     ( (!use_full_merge_rule) &&
-                       ((merge_info->at(i).nfa < min(merge_info->at(node1-N).min_nfa_in_branch,
+                       ( (!use_full_merge_rule) &&
+                         ((merge_info->at(i).nfa < min(merge_info->at(node1-N).min_nfa_in_branch,
                                                      merge_info->at(node2-N).min_nfa_in_branch))) ) )
+                     && (merge_info->at(i).probability > minProbability) )
                 {
                     merge_info->at(i).max_meaningful = true;
                     merge_info->at(i).max_in_branch.push_back(i);
@@ -2339,11 +2329,11 @@ void MaxMeaningfulClustering::build_merge_info(double *Z, double *X, int N, int 
                 } else {
                     merge_info->at(i).max_meaningful = false;
                     merge_info->at(i).max_in_branch.insert(merge_info->at(i).max_in_branch.end(),
-                    merge_info->at(node1-N).max_in_branch.begin(),
-                    merge_info->at(node1-N).max_in_branch.end());
+                                                           merge_info->at(node1-N).max_in_branch.begin(),
+                                                           merge_info->at(node1-N).max_in_branch.end());
                     merge_info->at(i).max_in_branch.insert(merge_info->at(i).max_in_branch.end(),
-                    merge_info->at(node2-N).max_in_branch.begin(),
-                    merge_info->at(node2-N).max_in_branch.end());
+                                                           merge_info->at(node2-N).max_in_branch.begin(),
+                                                           merge_info->at(node2-N).max_in_branch.end());
 
                     if (merge_info->at(i).nfa < min(merge_info->at(node1-N).min_nfa_in_branch,
                                                     merge_info->at(node2-N).min_nfa_in_branch))
@@ -2359,7 +2349,8 @@ void MaxMeaningfulClustering::build_merge_info(double *Z, double *X, int N, int 
                 if (node1>=N)
                 {
                     if ((merge_info->at(i).nfa < merge_info->at(node1-N).nfa + 1) &&
-                        (merge_info->at(i).nfa<merge_info->at(node1-N).min_nfa_in_branch))
+                        (merge_info->at(i).nfa<merge_info->at(node1-N).min_nfa_in_branch) &&
+                        (merge_info->at(i).probability > minProbability))
                     {
                         merge_info->at(i).max_meaningful = true;
                         merge_info->at(i).max_in_branch.push_back(i);
@@ -2376,7 +2367,8 @@ void MaxMeaningfulClustering::build_merge_info(double *Z, double *X, int N, int 
                     }
                 } else {
                     if ((merge_info->at(i).nfa < merge_info->at(node2-N).nfa + 1) &&
-                        (merge_info->at(i).nfa<merge_info->at(node2-N).min_nfa_in_branch))
+                        (merge_info->at(i).nfa<merge_info->at(node2-N).min_nfa_in_branch) &&
+                        (merge_info->at(i).probability > minProbability))
                     {
                         merge_info->at(i).max_meaningful = true;
                         merge_info->at(i).max_in_branch.push_back(i);
@@ -2409,170 +2401,6 @@ void MaxMeaningfulClustering::build_merge_info(double *Z, double *X, int N, int 
 
 }
 
-void MaxMeaningfulClustering::build_merge_info(double *Z, int N, vector<HCluster> *merge_info,
-                                               vector< vector<int> > *meaningful_clusters)
-{
-
-    // walk the whole dendogram
-    for (int i=0; i<(N-1)*4; i=i+4)
-    {
-        HCluster cluster;
-        cluster.num_elem = (int)Z[i+3]; //number of elements
-
-        int node1  = (int)Z[i];
-        int node2  = (int)Z[i+1];
-        float dist = (float)Z[i+2];
-        if (dist != dist) //this is to avoid NaN values
-            dist=0;
-
-        if (node1<N)
-        {
-            cluster.elements.push_back((int)node1);
-        }
-        else
-        {
-            for (int ii=0; ii<(int)merge_info->at(node1-N).elements.size(); ii++)
-            {
-                cluster.elements.push_back(merge_info->at(node1-N).elements[ii]);
-            }
-        }
-        if (node2<N)
-        {
-            cluster.elements.push_back((int)node2);
-        }
-        else
-        {
-            for (int ii=0; ii<(int)merge_info->at(node2-N).elements.size(); ii++)
-            {
-                cluster.elements.push_back(merge_info->at(node2-N).elements[ii]);
-            }
-        }
-
-        cluster.dist   = dist;
-        if (cluster.dist >= 1)
-            cluster.dist = 0.999999f;
-        if (cluster.dist == 0)
-            cluster.dist = 1.e-25f;
-
-        cluster.dist_ext   = 1;
-
-        if (node1>=N)
-        {
-            merge_info->at(node1-N).dist_ext = cluster.dist;
-        }
-        if (node2>=N)
-        {
-            merge_info->at(node2-N).dist_ext = cluster.dist;
-        }
-
-        cluster.node1 = node1;
-        cluster.node2 = node2;
-
-        merge_info->push_back(cluster);
-    }
-
-    for (int i=0; i<(int)merge_info->size(); i++)
-    {
-
-        merge_info->at(i).nfa = nfa(merge_info->at(i).dist,
-                                    merge_info->at(i).num_elem, N);
-        int node1 = merge_info->at(i).node1;
-        int node2 = merge_info->at(i).node2;
-
-        if ((node1<N)&&(node2<N))
-        {
-            // both nodes are individual samples (nfa=1) so this cluster is max.
-            merge_info->at(i).max_meaningful = true;
-            merge_info->at(i).max_in_branch.push_back(i);
-            merge_info->at(i).min_nfa_in_branch = merge_info->at(i).nfa;
-        } else {
-            if ((node1>=N)&&(node2>=N))
-            {
-                // both nodes are "sets" so we must evaluate the merging condition
-                if ((merge_info->at(i).nfa < merge_info->at(node1-N).nfa + merge_info->at(node2-N).nfa) &&
-                    (merge_info->at(i).nfa < min(merge_info->at(node1-N).min_nfa_in_branch,
-                                                 merge_info->at(node2-N).min_nfa_in_branch)))
-                {
-                    merge_info->at(i).max_meaningful = true;
-                    merge_info->at(i).max_in_branch.push_back(i);
-                    merge_info->at(i).min_nfa_in_branch = merge_info->at(i).nfa;
-                    for (int k =0; k<(int)merge_info->at(node1-N).max_in_branch.size(); k++)
-                        merge_info->at(merge_info->at(node1-N).max_in_branch.at(k)).max_meaningful = false;
-                    for (int k =0; k<(int)merge_info->at(node2-N).max_in_branch.size(); k++)
-                        merge_info->at(merge_info->at(node2-N).max_in_branch.at(k)).max_meaningful = false;
-                } else {
-                    merge_info->at(i).max_meaningful = false;
-                    merge_info->at(i).max_in_branch.insert(merge_info->at(i).max_in_branch.end(),
-                    merge_info->at(node1-N).max_in_branch.begin(),
-                    merge_info->at(node1-N).max_in_branch.end());
-                    merge_info->at(i).max_in_branch.insert(merge_info->at(i).max_in_branch.end(),
-                    merge_info->at(node2-N).max_in_branch.begin(),
-                    merge_info->at(node2-N).max_in_branch.end());
-                    if (merge_info->at(i).nfa < min(merge_info->at(node1-N).min_nfa_in_branch,
-                                                    merge_info->at(node2-N).min_nfa_in_branch))
-                        merge_info->at(i).min_nfa_in_branch = merge_info->at(i).nfa;
-                    else
-                        merge_info->at(i).min_nfa_in_branch = min(merge_info->at(node1-N).min_nfa_in_branch,
-                                                                  merge_info->at(node2-N).min_nfa_in_branch);
-                }
-
-            } else {
-
-                // one node is a "set" and the other is an indivisual sample: check merging condition
-                if (node1>=N)
-                {
-                    if ((merge_info->at(i).nfa < merge_info->at(node1-N).nfa + 1) &&
-                        (merge_info->at(i).nfa<merge_info->at(node1-N).min_nfa_in_branch))
-                    {
-                        merge_info->at(i).max_meaningful = true;
-                        merge_info->at(i).max_in_branch.push_back(i);
-                        merge_info->at(i).min_nfa_in_branch = merge_info->at(i).nfa;
-
-                        for (int k =0; k<(int)merge_info->at(node1-N).max_in_branch.size(); k++)
-                            merge_info->at(merge_info->at(node1-N).max_in_branch.at(k)).max_meaningful = false;
-
-                    } else {
-                        merge_info->at(i).max_meaningful = false;
-                        merge_info->at(i).max_in_branch.insert(merge_info->at(i).max_in_branch.end(),
-                        merge_info->at(node1-N).max_in_branch.begin(),
-                        merge_info->at(node1-N).max_in_branch.end());
-                        merge_info->at(i).min_nfa_in_branch = min(merge_info->at(i).nfa,
-                                                                  merge_info->at(node1-N).min_nfa_in_branch);
-                    }
-                } else {
-                    if ((merge_info->at(i).nfa < merge_info->at(node2-N).nfa + 1) &&
-                        (merge_info->at(i).nfa<merge_info->at(node2-N).min_nfa_in_branch))
-                    {
-                        merge_info->at(i).max_meaningful = true;
-                        merge_info->at(i).max_in_branch.push_back(i);
-                        merge_info->at(i).min_nfa_in_branch = merge_info->at(i).nfa;
-                        for (int k =0; k<(int)merge_info->at(node2-N).max_in_branch.size(); k++)
-                            merge_info->at(merge_info->at(node2-N).max_in_branch.at(k)).max_meaningful = false;
-                    } else {
-                        merge_info->at(i).max_meaningful = false;
-                        merge_info->at(i).max_in_branch.insert(merge_info->at(i).max_in_branch.end(),
-                        merge_info->at(node2-N).max_in_branch.begin(),
-                        merge_info->at(node2-N).max_in_branch.end());
-                        merge_info->at(i).min_nfa_in_branch = min(merge_info->at(i).nfa,
-                        merge_info->at(node2-N).min_nfa_in_branch);
-                    }
-                }
-            }
-        }
-    }
-
-    for (int i=0; i<(int)merge_info->size(); i++)
-    {
-        if (merge_info->at(i).max_meaningful)
-        {
-            vector<int> cluster;
-            for (int k=0; k<(int)merge_info->at(i).elements.size();k++)
-                cluster.push_back(merge_info->at(i).elements.at(k));
-            meaningful_clusters->push_back(cluster);
-        }
-    }
-
-}
 
 int MaxMeaningfulClustering::nfa(float sigma, int k, int N)
 {
@@ -2580,50 +2408,402 @@ int MaxMeaningfulClustering::nfa(float sigma, int k, int N)
     return -1*(int)NFA( N, k, (double) sigma, 0);
 }
 
-void accumulate_evidence(vector<vector<int> > *meaningful_clusters, int grow, Mat *co_occurrence);
 
-void accumulate_evidence(vector<vector<int> > *meaningful_clusters, int grow, Mat *co_occurrence)
+// utility functions for MST
+static bool edge_comp (Vec4f i,Vec4f j)
 {
-    for (int k=0; k<(int)meaningful_clusters->size(); k++)
-        for (int i=0; i<(int)meaningful_clusters->at(k).size(); i++)
-            for (int j=i; j<(int)meaningful_clusters->at(k).size(); j++)
-                if (meaningful_clusters->at(k).at(i) != meaningful_clusters->at(k).at(j))
-                {
-                    co_occurrence->at<double>(meaningful_clusters->at(k).at(i), meaningful_clusters->at(k).at(j)) += grow;
-                    co_occurrence->at<double>(meaningful_clusters->at(k).at(j), meaningful_clusters->at(k).at(i)) += grow;
-                }
+    Point a = Point(cvRound(i[0]), cvRound(i[1]));
+    Point b = Point(cvRound(i[2]), cvRound(i[3]));
+    double edist_i = cv::norm(a-b);
+    a = Point(cvRound(j[0]), cvRound(j[1]));
+    b = Point(cvRound(j[2]), cvRound(j[3]));
+    double edist_j = cv::norm(a-b);
+    return (edist_i>edist_j);
 }
 
-// ERFeatures structure stores additional features for a given ERStat instance
-struct ERFeatures
+static int find_vertex(vector<vector<Point> > &forest, Point &p)
 {
-    int area;
-    Point center;
-    Rect  rect;
-    float intensity_mean;  ///< mean intensity of the whole region
-    float intensity_std;  ///< intensity standard deviation of the whole region
-    float boundary_intensity_mean;  ///< mean intensity of the boundary of the region
-    float boundary_intensity_std;  ///< intensity standard deviation of the boundary of the region
-    double stroke_mean;  ///< mean stroke width approximation of the whole region
-    double stroke_std;  ///< stroke standard deviation of the whole region
-    double gradient_mean;  ///< mean gradient magnitude of the whole region
-    double gradient_std;  ///< gradient magnitude standard deviation of the whole region
-};
+  for (int i=0; i<(int)forest.size(); i++)
+  {
+    for (int j=0; j<(int)forest[i].size(); j++)
+    {
+        if (forest[i][j] == p)
+            return i;
+    }
+  }
+  return -1;
+}
 
-float extract_features(InputOutputArray src, vector<ERStat> &regions, vector<ERFeatures> &features);
-void  ergrouping(InputOutputArray src, vector<ERStat> &regions);
+static int getAngleABC( Point a, Point b, Point c )
+{
+    Point ab = Point( b.x - a.x, b.y - a.y );
+    Point cb = Point( b.x - c.x, b.y - c.y );
 
-float extract_features(InputOutputArray src, vector<ERStat> &regions, vector<ERFeatures> &features)
+    // dot product
+    float dot = (ab.x * cb.x + ab.y * cb.y);
+
+    // length square of both vectors
+    float abSqr = ab.x * ab.x + ab.y * ab.y;
+    float cbSqr = cb.x * cb.x + cb.y * cb.y;
+
+    // square of cosine of the needed angle
+    float cosSqr = dot * dot / abSqr / cbSqr;
+
+    // this is a known trigonometric equality:
+    // cos(alpha * 2) = [ cos(alpha) ]^2 * 2 - 1
+    float cos2 = 2 * cosSqr - 1;
+
+    // Here's the only invocation of the heavy function.
+    // It's a good idea to check explicitly if cos2 is within [-1 .. 1] range
+
+    const float pi = 3.141592f;
+
+    float alpha2 =
+        (cos2 <= -1) ? pi :
+        (cos2 >= 1) ? 0 :
+        acosf(cos2);
+
+    float rslt = alpha2 / 2;
+
+    float rs = rslt * 180. / pi;
+
+
+    // Now revolve the ambiguities.
+    // 1. If dot product of two vectors is negative - the angle is definitely
+    // above 90 degrees. Still we have no information regarding the sign of the angle.
+
+    // NOTE: This ambiguity is the consequence of our method: calculating the cosine
+    // of the double angle. This allows us to get rid of calling sqrt.
+
+    if (dot < 0)
+        rs = 180 - rs;
+
+    // 2. Determine the sign. For this we'll use the Determinant of two vectors.
+    float det = (ab.x * cb.y - ab.y * cb.y);
+    if (det < 0)
+        rs = -rs;
+
+    return abs((int) floor(rs + 0.5));
+}
+
+double MaxMeaningfulClustering::probability(vector<int> &cluster)
+{
+
+    if (cluster.size()>MAX_GROUP_ELEMENTS)
+        return 0.;
+
+    vector<float> sample;
+    sample.push_back(0);
+    sample.push_back(cluster.size());
+
+    Mat diameters      ( cluster.size(), 1, CV_32F, 1 );
+    Mat strokes        ( cluster.size(), 1, CV_32F, 1 );
+    Mat gradients      ( cluster.size(), 1, CV_32F, 1 );
+    Mat fg_intensities ( cluster.size(), 1, CV_32F, 1 );
+    Mat bg_intensities ( cluster.size(), 1, CV_32F, 1 );
+    Mat axial_ratios   ( cluster.size(), 1, CV_32F, 1 );
+    Mat chull_ratios   ( cluster.size(), 1, CV_32F, 1 );
+    Mat convexities    ( cluster.size(), 1, CV_32F, 1 );
+    Subdiv2D subdiv(Rect(0,0,imsize.width,imsize.height));
+    vector< vector<Point> > forest(cluster.size());
+    float maxAvgOverlap = 0;
+
+    for (int i=(int)cluster.size()-1; i>=0; i--)
+    {
+
+        diameters.at<float>(i,0)      = (float)max(regions.at(cluster.at(i)).rect.width,regions.at(cluster.at(i)).rect.height);
+        strokes.at<float>(i,0)        = (float)regions.at(cluster.at(i)).stroke_mean;
+        gradients.at<float>(i,0)      = (float)regions.at(cluster.at(i)).gradient_mean;
+        fg_intensities.at<float>(i,0) = (float)regions.at(cluster.at(i)).intensity_mean;
+        bg_intensities.at<float>(i,0) = (float)regions.at(cluster.at(i)).boundary_intensity_mean;
+        axial_ratios.at<float>(i,0)   = (float)regions.at(cluster.at(i)).axial_ratio;
+        chull_ratios.at<float>(i,0)   = (float)regions.at(cluster.at(i)).convex_hull_ratio;
+        convexities.at<float>(i,0)    = (float)regions.at(cluster.at(i)).convexities;
+
+        Point2f fp((float)regions.at(cluster.at(i)).rect.x+(regions.at(cluster.at(i)).rect.width/2),
+                   (float)regions.at(cluster.at(i)).rect.y+(regions.at(cluster.at(i)).rect.height/2));
+        subdiv.insert(fp);
+        forest[i].push_back(Point((int)fp.x,(int)fp.y));
+        float avgOverlap = 0;
+        for (int j=0; j<(int)cluster.size(); j++)
+        {
+            if (j!=i)
+            {
+                Rect intersection = regions.at(cluster.at(i)).rect & regions.at(cluster.at(j)).rect;
+                int area_intersection = intersection.width * intersection.height;
+                int area_i = regions.at(cluster.at(i)).rect.width * regions.at(cluster.at(i)).rect.height;
+                int area_j = regions.at(cluster.at(j)).rect.width * regions.at(cluster.at(j)).rect.height;
+                if (area_intersection > 0)
+                {
+                    float overlap = (float)area_intersection / min(area_i, area_j);
+                    avgOverlap += overlap;
+                }
+            }
+        }
+        avgOverlap = avgOverlap / (cluster.size()-1);
+        if (avgOverlap > maxAvgOverlap)
+            maxAvgOverlap = avgOverlap;
+    }
+
+    Scalar mean,std;
+    meanStdDev( diameters, mean, std );
+    sample.push_back(std[0]/mean[0]); float diameter_mean = mean[0];
+    meanStdDev( strokes, mean, std );
+    sample.push_back(std[0]/mean[0]);
+    meanStdDev( gradients, mean, std );
+    sample.push_back(std[0]);
+    meanStdDev( fg_intensities, mean, std );
+    sample.push_back(std[0]);
+    meanStdDev( bg_intensities, mean, std );
+    sample.push_back(std[0]);
+
+    /* begin Kruskal algorithm to find the MST */
+    vector<Vec4f> edgeList;
+    subdiv.getEdgeList(edgeList);
+    std::sort (edgeList.begin(), edgeList.end(), edge_comp);
+
+    vector<Vec4f> mst_edges;
+    vector<float> edge_distances;
+
+    for( int k = (int)edgeList.size()-1; k>=0; k-- )
+    {
+        Vec4f e = edgeList[k];
+        Point pt0 = Point(cvRound(e[0]), cvRound(e[1]));
+        Point pt1 = Point(cvRound(e[2]), cvRound(e[3]));
+        int tree_pt0  = find_vertex(forest, pt0);
+        int tree_pt1  = find_vertex(forest, pt1);
+        if (((pt0.x>0)&&(pt0.x<imsize.width)&&(pt0.y>0)&&(pt0.y<imsize.height) &&
+             (pt1.x>0)&&(pt1.x<imsize.width)&&(pt1.y>0)&&(pt1.y<imsize.height)) &&
+                (tree_pt0 != tree_pt1))
+        {
+            mst_edges.push_back(e);
+            forest[tree_pt0].insert(forest[tree_pt0].begin(),forest[tree_pt1].begin(),forest[tree_pt1].end());
+            forest.erase(forest.begin()+tree_pt1);
+            edge_distances.push_back((float)norm(pt0-pt1));
+        }
+        if (mst_edges.size() == cluster.size()-1)
+            break;
+    }
+
+    //cout << "mst has " << mst_edges.size() << " edges " << endl;
+
+    /* End Kruskal algorithm */
+
+    vector<float> angles;
+    for (size_t k=0; k<mst_edges.size(); k++)
+    {
+        Vec4f q = mst_edges[k];
+        Point q_pt0 = Point(cvRound(q[0]), cvRound(q[1]));
+        Point q_pt1 = Point(cvRound(q[2]), cvRound(q[3]));
+        for (size_t j=k+1; j<mst_edges.size(); j++)
+        {
+            Vec4f t = mst_edges[j];
+            Point t_pt0 = Point(cvRound(t[0]), cvRound(t[1]));
+            Point t_pt1 = Point(cvRound(t[2]), cvRound(t[3]));
+            if(q_pt0 == t_pt0)
+                angles.push_back(getAngleABC(q_pt1, q_pt0 , t_pt1));
+            if(q_pt0 == t_pt1)
+                angles.push_back(getAngleABC(q_pt1, q_pt0 , t_pt0));
+            if(q_pt1 == t_pt0)
+                angles.push_back(getAngleABC(q_pt0, q_pt1 , t_pt1));
+            if(q_pt1 == t_pt1)
+                angles.push_back(getAngleABC(q_pt0, q_pt1 , t_pt0));
+        }
+    }
+    //cout << "we have " << angles.size() << " angles " << endl;
+    //for (int kk=0; kk<angles.size(); kk++)
+    //  cout << angles[kk] << " ";
+    //cout << endl;
+
+    meanStdDev( angles, mean, std );
+    sample.push_back(std[0]);
+    sample.push_back(mean[0]);
+    meanStdDev( edge_distances, mean, std );
+    sample.push_back(std[0]/mean[0]);
+    sample.push_back(mean[0]/diameter_mean);
+
+    meanStdDev( axial_ratios, mean, std );
+    sample.push_back(mean[0]);
+    sample.push_back(std[0]);
+
+    /// Calculate average shape self-similarity
+    double avg_shape_match = 0;
+    double eps = 1.e-5;
+    int num_matches = 0, sma, smb;
+    for (size_t i=0; i<cluster.size(); i++)
+    {
+        for (size_t j=i+1; j<cluster.size(); j++)
+        {
+            for (int h=0; h<7; h++)
+            {
+                double ama = fabs( regions[cluster[i]].hu_moments[h] );
+                double amb = fabs( regions[cluster[j]].hu_moments[h] );
+
+                if( regions[cluster[i]].hu_moments[h] > 0 )
+                    sma = 1;
+                else if( regions[cluster[i]].hu_moments[h] < 0 )
+                    sma = -1;
+                else
+                    sma = 0;
+                if( regions[cluster[j]].hu_moments[h] > 0 )
+                    smb = 1;
+                else if( regions[cluster[j]].hu_moments[h] < 0 )
+                    smb = -1;
+                else
+                    smb = 0;
+
+                if( ama > eps && amb > eps )
+                {
+                    ama = 1. / (sma * log10( ama ));
+                    amb = 1. / (smb * log10( amb ));
+                    avg_shape_match += fabs( -ama + amb );
+                }
+            }
+            num_matches++;
+        }
+    }
+
+    sample.push_back((float)(avg_shape_match/num_matches));
+
+    sample.push_back(maxAvgOverlap);
+
+    meanStdDev( chull_ratios, mean, std );
+    sample.push_back(mean[0]);
+    sample.push_back(std[0]);
+
+    meanStdDev( convexities, mean, std );
+    sample.push_back(mean[0]);
+    sample.push_back(std[0]);
+
+    float votes_group = group_boost.predict( Mat(sample), Mat(), Range::all(), false, true );
+
+    return (double)1-(double)1/(1+exp(-2*votes_group));
+}
+
+
+/* fast thinning for stroke width calculation */
+bool guo_hall_thinning(const cv::Mat1b & img, cv::Mat& skeleton);
+
+bool guo_hall_thinning(const cv::Mat1b & img, cv::Mat& skeleton)
+{
+
+  uchar* img_ptr = img.data;
+  uchar* skel_ptr = skeleton.data;
+
+  for (int row = 0; row < img.rows; ++row)
+  {
+    for (int col = 0; col < img.cols; ++col)
+    {
+      if (*img_ptr)
+      {
+        int key = row * img.cols + col;
+        if ((col > 0 && *img_ptr != img.data[key - 1]) ||
+            (col < img.cols-1 && *img_ptr != img.data[key + 1]) ||
+            (row > 0 && *img_ptr != img.data[key - img.cols]) ||
+            (row < img.rows-1 && *img_ptr != img.data[key + img.cols]))
+        {
+          *skel_ptr = 255;
+        }
+        else
+        {
+          *skel_ptr = 128;
+        }
+      }
+      img_ptr++;
+      skel_ptr++;
+    }
+  }
+
+  int max_iters = 10000;
+  int niters = 0;
+  bool changed = false;
+
+  /// list of keys to set to 0 at the end of the iteration
+  std::deque<int> cols_to_set;
+  std::deque<int> rows_to_set;
+
+  while (changed && niters < max_iters)
+  {
+    changed = false;
+    for (unsigned short iter = 0; iter < 2; ++iter)
+    {
+      uchar *skeleton_ptr = skeleton.data;
+      rows_to_set.clear();
+      cols_to_set.clear();
+      // for each point in skeleton, check if it needs to be changed
+      for (int row = 0; row < skeleton.rows; ++row)
+      {
+        for (int col = 0; col < skeleton.cols; ++col)
+        {
+          if (*skeleton_ptr++ == 255)
+          {
+            bool p2, p3, p4, p5, p6, p7, p8, p9;
+            p2 = skeleton.data[(row-1) * skeleton.cols + col];
+            p3 = skeleton.data[(row-1) * skeleton.cols + col+1];
+            p4 = skeleton.data[row     * skeleton.cols + col+1];
+            p5 = skeleton.data[(row+1) * skeleton.cols + col+1];
+            p6 = skeleton.data[(row+1) * skeleton.cols + col];
+            p7 = skeleton.data[(row+1) * skeleton.cols + col-1];
+            p8 = skeleton.data[row     * skeleton.cols + col-1];
+            p9 = skeleton.data[(row-1) * skeleton.cols + col-1];
+
+            int C  = (!p2 & (p3 | p4)) + (!p4 & (p5 | p6)) +
+                    (!p6 & (p7 | p8)) + (!p8 & (p9 | p2));
+            int N1 = (p9 | p2) + (p3 | p4) + (p5 | p6) + (p7 | p8);
+            int N2 = (p2 | p3) + (p4 | p5) + (p6 | p7) + (p8 | p9);
+            int N  = N1 < N2 ? N1 : N2;
+            int m  = iter == 0 ? ((p6 | p7 | !p9) & p8) : ((p2 | p3 | !p5) & p4);
+
+            if ((C == 1) && (N >= 2) && (N <= 3) && (m == 0))
+            {
+              cols_to_set.push_back(col);
+              rows_to_set.push_back(row);
+            }
+          }
+        }
+      }
+
+      // set all points in rows_to_set (of skel)
+      unsigned int rows_to_set_size = rows_to_set.size();
+      for (unsigned int pt_idx = 0; pt_idx < rows_to_set_size; ++pt_idx)
+      {
+        if (!changed)
+          changed = (skeleton.data[rows_to_set[pt_idx] * skeleton.cols + cols_to_set[pt_idx]]);
+
+        int key = rows_to_set[pt_idx] * skeleton.cols + cols_to_set[pt_idx];
+        skeleton.data[key] = 0;
+        if (cols_to_set[pt_idx] > 0 && skeleton.data[key - 1] == 128) // left
+            skeleton.data[key - 1] = 255;
+        if (cols_to_set[pt_idx] < skeleton.cols-1 && skeleton.data[key + 1] == 128) // right
+            skeleton.data[key + 1] = 255;
+        if (rows_to_set[pt_idx] > 0 && skeleton.data[key - skeleton.cols] == 128) // up
+            skeleton.data[key - skeleton.cols] = 255;
+        if (rows_to_set[pt_idx] < skeleton.rows-1 && skeleton.data[key + skeleton.cols] == 128) // down
+            skeleton.data[key + skeleton.cols] = 255;
+      }
+
+      if ((niters++) >= max_iters) // we have done!
+        break;
+    }
+  }
+
+  skeleton = (skeleton != 0);
+  return true;
+}
+
+
+float extract_features(Mat &grey, Mat& channel, vector<ERStat> &regions, vector<ERFeatures> &features);
+
+float extract_features(Mat &grey, Mat& channel, vector<ERStat> &regions, vector<ERFeatures> &features)
 {
     // assert correct image type
-    CV_Assert( (src.type() == CV_8UC1) || (src.type() == CV_8UC3) );
+    CV_Assert(( channel.type() == CV_8UC1 ) && ( grey.type() == CV_8UC1 ));
+    CV_Assert( channel.size() == grey.size() );
 
     CV_Assert( !regions.empty() );
     CV_Assert( features.empty() );
 
-    Mat grey = src.getMat();
-
-    Mat gradient_magnitude = Mat_<float>(grey.size());
+    Mat gradient_magnitude = Mat_<double>(grey.size());
     get_gradient_magnitude( grey, gradient_magnitude);
 
     Mat region_mask = Mat::zeros(grey.rows+2, grey.cols+2, CV_8UC1);
@@ -2650,8 +2830,8 @@ float extract_features(InputOutputArray src, vector<ERStat> &regions, vector<ERF
             int flags = 4 + (newMaskVal << 8) + FLOODFILL_FIXED_RANGE + FLOODFILL_MASK_ONLY;
             Rect rect;
 
-            floodFill( grey(Rect(Point(stat->rect.x,stat->rect.y),Point(stat->rect.br().x,stat->rect.br().y))),
-                       region, Point(stat->pixel%grey.cols - stat->rect.x, stat->pixel/grey.cols - stat->rect.y),
+            floodFill( channel(Rect(Point(stat->rect.x,stat->rect.y),Point(stat->rect.br().x,stat->rect.br().y))),
+                       region, Point(stat->pixel%channel.cols - stat->rect.x, stat->pixel/channel.cols - stat->rect.y),
                        Scalar(255), &rect, Scalar(stat->level), Scalar(0), flags );
             rect.width += 2;
             rect.height += 2;
@@ -2663,10 +2843,18 @@ float extract_features(InputOutputArray src, vector<ERStat> &regions, vector<ERF
             f.intensity_mean = (float)mean[0];
             f.intensity_std  = (float)std[0];
 
-            Mat tmp;
-            distanceTransform(rect_mask, tmp, DIST_L1,3);
+            Mat tmp,bw;
+            region_mask(Rect(stat->rect.x+1,stat->rect.y+1,stat->rect.width,stat->rect.height)).copyTo(bw);
+            distanceTransform(bw, tmp, DIST_L1,3); //L1 gives distance in round integers while L2 floats
 
-            meanStdDev(tmp,mean,std,rect_mask);
+            // Add border because if region span all the image size skeleton will crash
+            copyMakeBorder(bw, bw, 5, 5, 5, 5, BORDER_CONSTANT, Scalar(0));
+            Mat skeleton = Mat::zeros(bw.size(),CV_8UC1);
+            guo_hall_thinning(bw,skeleton);
+            Mat mask;
+            skeleton(Rect(5,5,bw.cols-10,bw.rows-10)).copyTo(mask);
+            bw(Rect(5,5,bw.cols-10,bw.rows-10)).copyTo(bw);
+            meanStdDev(tmp,mean,std,mask);
             f.stroke_mean = mean[0];
             f.stroke_std  = std[0];
 
@@ -2689,6 +2877,34 @@ float extract_features(InputOutputArray src, vector<ERStat> &regions, vector<ERF
             meanStdDev( gradient_magnitude(stat->rect), mean, std, tmp);
             f.gradient_mean = mean[0];
             f.gradient_std  = std[0];
+
+            copyMakeBorder(bw, bw, 5, 5, 5, 5, BORDER_CONSTANT, Scalar(0));
+
+            vector<vector<Point> > contours0;
+            vector<Vec4i> hierarchy;
+            findContours( bw, contours0, hierarchy, RETR_TREE, CHAIN_APPROX_SIMPLE);
+
+            RotatedRect rrect = minAreaRect(contours0.at(0));
+
+            f.axial_ratio = max(rrect.size.width, rrect.size.height) / min(rrect.size.width, rrect.size.height);
+
+            Moments mu = moments(contours0.at(0));
+            HuMoments (mu, f.hu_moments);
+
+            vector<Point> hull;
+            convexHull(contours0[0],hull);
+            f.convex_hull_ratio = (float)contourArea(hull)/contourArea(contours0[0]);
+            vector<Vec4i> cx;
+            vector<int> hull_idx;
+            //TODO check epsilon parameter of approxPolyDP (set empirically) : we want more precission
+            //     if the region is very small because otherwise we'll loose all the convexities
+            approxPolyDP( Mat(contours0[0]), contours0[0], (float)min(rrect.size.width,rrect.size.height)/17, true );
+            convexHull(contours0[0],hull_idx,false,false);
+            f.convexities = 0;
+            if (hull_idx.size()>2)
+                if (contours0[0].size()>3)
+                    convexityDefects(contours0[0],hull_idx,cx);
+            f.convexities = cx.size();
 
             rect_mask = Scalar(0);
 
@@ -2713,27 +2929,6 @@ float extract_features(InputOutputArray src, vector<ERStat> &regions, vector<ERF
     return max_stroke;
 }
 
-static bool edge_comp (Vec4f i,Vec4f j)
-{
-    Point a = Point(cvRound(i[0]), cvRound(i[1]));
-    Point b = Point(cvRound(i[2]), cvRound(i[3]));
-    double edist_i = cv::norm(a-b);
-    a = Point(cvRound(j[0]), cvRound(j[1]));
-    b = Point(cvRound(j[2]), cvRound(j[3]));
-    double edist_j = cv::norm(a-b);
-    return (edist_i<edist_j);
-}
-
-static bool find_vertex(vector<Point> &vertex, Point &p)
-{
-    for (int i=0; i<(int)vertex.size(); i++)
-    {
-        if (vertex.at(i) == p)
-            return true;
-    }
-    return false;
-}
-
 
 /*!
     Find groups of Extremal Regions that are organized as text blocks. This function implements
@@ -2756,16 +2951,15 @@ static bool find_vertex(vector<Point> &vertex, Point &p)
     \param  minProbability The minimum probability for accepting a group
     \param  groups         The output of the algorithm are stored in this parameter as list of rectangles.
 */
-void erGrouping(InputArrayOfArrays _src, vector<vector<ERStat> > &regions, const std::string& filename, float minProbability, std::vector<Rect > &text_boxes)
+static void erGroupingGK(InputArray _image, InputArrayOfArrays _src, vector<vector<ERStat> > &regions, std::vector<std::vector<Vec2i> > &groups,  std::vector<Rect> &text_boxes, const std::string& filename, float minProbability)
 {
 
+    CV_Assert( _image.getMat().type() == CV_8UC3 );
     // TODO assert correct vector<Mat>
 
-    CvBoost group_boost;
-    if (ifstream(filename.c_str()))
-        group_boost.load( filename.c_str(), "boost" );
-    else
-        CV_Error(CV_StsBadArg, "erGrouping: Default classifier file not found!");
+    Mat image = _image.getMat();
+    Mat grey;
+    cvtColor(image, grey, COLOR_BGR2GRAY);
 
     std::vector<Mat> src;
     _src.getMatVector(src);
@@ -2780,385 +2974,96 @@ void erGrouping(InputArrayOfArrays _src, vector<vector<ERStat> > &regions, const
 
     for (int c=0; c<(int)src.size(); c++)
     {
-        Mat img = src.at(c);
+        Mat channel = src.at(c);
 
         // assert correct image type
-        CV_Assert( img.type() == CV_8UC1 );
+        CV_Assert( channel.type() == CV_8UC1 );
 
         CV_Assert( !regions.at(c).empty() );
 
         if ( regions.at(c).size() < 3 )
-          continue;
+            continue;
 
 
         std::vector<vector<int> > meaningful_clusters;
         vector<ERFeatures> features;
-        float max_stroke = extract_features(img,regions.at(c),features);
+        float max_stroke = extract_features(grey, channel, regions.at(c), features);
 
-        MaxMeaningfulClustering   mm_clustering(METHOD_METR_SINGLE, METRIC_SEUCLIDEAN);
 
-        Mat co_occurrence_matrix = Mat::zeros((int)regions.at(c).size(), (int)regions.at(c).size(), CV_64F);
 
-        int num_features = MAX_NUM_FEATURES;
+        // Find the Max. Meaningful Clusters in the learned feature space
 
-        // Find the Max. Meaningful Clusters in each feature space independently
-        int dims[MAX_NUM_FEATURES] = {3,3,3,3,3,3,3,3,3};
-
-        for (int f=0; f<num_features; f++)
-        {
-            unsigned int N = (unsigned int)regions.at(c).size();
-            if (N<3) break;
-            int dim = dims[f];
-            double *data = (double*)malloc(dim*N * sizeof(double));
-            if (data == NULL)
-                CV_Error(CV_StsNoMem, "Not enough Memory for erGrouping hierarchical clustering structures!");
-            int count = 0;
-            for (int i=0; i<(int)regions.at(c).size(); i++)
-            {
-                data[count] = (double)features.at(i).center.x/img.cols;
-                data[count+1] = (double)features.at(i).center.y/img.rows;
-                switch (f)
-                {
-                    case 0:
-                        data[count+2] = (double)features.at(i).intensity_mean/255;
-                        break;
-                    case 1:
-                        data[count+2] = (double)features.at(i).boundary_intensity_mean/255;
-                        break;
-                    case 2:
-                        data[count+2] = (double)features.at(i).rect.y/img.rows;
-                        break;
-                    case 3:
-                        data[count+2] = (double)(features.at(i).rect.y+features.at(i).rect.height)/img.rows;
-                        break;
-                    case 4:
-                        data[count+2] = (double)max(features.at(i).rect.height,
-                                                    features.at(i).rect.width)/max(img.rows,img.cols);
-                        break;
-                    case 5:
-                        data[count+2] = (double)features.at(i).stroke_mean/max_stroke;
-                        break;
-                    case 6:
-                        data[count+2] = (double)features.at(i).area/(img.rows*img.cols);
-                        break;
-                    case 7:
-                        data[count+2] = (double)(features.at(i).rect.height*
-                                                 features.at(i).rect.width)/(img.rows*img.cols);
-                        break;
-                    case 8:
-                        data[count+2] = (double)features.at(i).gradient_mean/255;
-                        break;
-                }
-                count = count+dim;
-            }
-
-            mm_clustering(data, N, dim, METHOD_METR_SINGLE, METRIC_SEUCLIDEAN, &meaningful_clusters);
-
-            // Accumulate evidence in the coocurrence matrix
-            accumulate_evidence(&meaningful_clusters, 1, &co_occurrence_matrix);
-
-            free(data);
-            meaningful_clusters.clear();
-        }
-
-        double minVal;
-        double maxVal;
-        minMaxLoc(co_occurrence_matrix, &minVal, &maxVal);
-
-        maxVal = num_features - 1;
-        minVal=0;
-
-        co_occurrence_matrix = maxVal - co_occurrence_matrix;
-        co_occurrence_matrix = co_occurrence_matrix / maxVal;
-
-        // we want a sparse matrix
-        double *D = (double*)malloc((regions.at(c).size()*regions.at(c).size()) * sizeof(double));
-        if (D == NULL)
+        unsigned int N = (unsigned int)regions.at(c).size();
+        int dim = 7; //dimensionality of feature space
+        double *data = (double*)malloc(dim*N * sizeof(double));
+        if (data == NULL)
             CV_Error(CV_StsNoMem, "Not enough Memory for erGrouping hierarchical clustering structures!");
 
-        int pos = 0;
-        for (int i = 0; i<co_occurrence_matrix.rows; i++)
+        //Learned weights
+        float weight_param1 = 1.00f;
+        float weight_param2 = 0.65f;
+        float weight_param3 = 0.65f;
+        float weight_param4 = 0.49f;
+        float weight_param5 = 0.67f;
+        float weight_param6 = 0.91f;
+
+        int count = 0;
+        for (int i=0; i<(int)regions.at(c).size(); i++)
         {
-            for (int j = i+1; j<co_occurrence_matrix.cols; j++)
+            data[count] = (double)features.at(i).center.x/channel.cols*weight_param1;
+            data[count+1] = (double)features.at(i).center.y/channel.rows*weight_param1;
+            data[count+2] = (double)features.at(i).intensity_mean/255*weight_param2;
+            data[count+3] = (double)features.at(i).boundary_intensity_mean/255*weight_param3;
+            data[count+4] = (double)max(features.at(i).rect.height,features.at(i).rect.width)/
+                                    max(channel.rows,channel.cols)*weight_param5;
+            data[count+5] = (double)features.at(i).stroke_mean/max_stroke*weight_param6;
+            data[count+6] = (double)features.at(i).gradient_mean/255*weight_param4;
+
+            count = count+dim;
+        }
+
+        MaxMeaningfulClustering   mm_clustering(METHOD_METR_SINGLE, METRIC_SEUCLIDEAN, features, Size(channel.cols,channel.rows), filename, minProbability);
+        mm_clustering(data, N, dim, METHOD_METR_SINGLE, METRIC_SEUCLIDEAN, &meaningful_clusters);
+
+        free(data);
+
+        for (size_t k=0; k<meaningful_clusters.size(); k++)
+        {
+            if (meaningful_clusters[k].size()>2)
             {
-                D[pos] = (double)co_occurrence_matrix.at<double>(i, j);
-                pos++;
+                Rect group_rect = features[meaningful_clusters[k][0]].rect;
+                vector<Vec2i> group;
+                group.push_back(Vec2i(c,meaningful_clusters[k][0]));
+                for (size_t l=1; l<meaningful_clusters[k].size(); l++)
+                {
+                    group_rect = group_rect | features[meaningful_clusters[k][l]].rect;
+                    group.push_back(Vec2i(c,meaningful_clusters[k][l]));
+                }
+                text_boxes.push_back(group_rect);
+                groups.push_back(group);
             }
         }
 
-        // Find the Max. Meaningful Clusters in the co-occurrence matrix
-        mm_clustering(D, (unsigned int)regions.at(c).size(), METHOD_METR_AVERAGE, &meaningful_clusters);
-        free(D);
+        //getLines(img, &regions, &final_clusters, line_rects, line_regions, multi_oriented);
 
-
-
-        /* --------------------------------- Groups Validation --------------------------------*/
-        /* Examine each of the clusters in order to assest if they are valid text lines or not */
-        /* ------------------------------------------------------------------------------------*/
-
-        vector<vector<float> > data_arrays(meaningful_clusters.size());
-        vector<Rect> groups_rects(meaningful_clusters.size());
-
-        // Collect group level features and classify the group
-        for (int i=(int)meaningful_clusters.size()-1; i>=0; i--)
-        {
-
-            Rect group_rect;
-            float sumx=0, sumy=0, sumxy=0, sumx2=0;
-
-            // linear regression slope helps discriminating horizontal aligned groups
-            for (int j=0; j<(int)meaningful_clusters.at(i).size();j++)
-            {
-                if (j==0)
-                {
-                    group_rect = regions.at(c).at(meaningful_clusters.at(i).at(j)).rect;
-                } else {
-                    group_rect = group_rect | regions.at(c).at(meaningful_clusters.at(i).at(j)).rect;
-                }
-
-                sumx  += regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.x +
-                                    regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.width/2;
-                sumy  += regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.y +
-                                    regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.height/2;
-                sumxy += (regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.x +
-                                     regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.width/2)*
-                         (regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.y +
-                                     regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.height/2);
-                sumx2 += (regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.x +
-                                     regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.width/2)*
-                         (regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.x +
-                                     regions.at(c).at(meaningful_clusters.at(i).at(j)).rect.width/2);
-            }
-            // line coefficients
-            //float a0=(sumy*sumx2-sumx*sumxy)/((int)meaningful_clusters.at(i).size()*sumx2-sumx*sumx);
-            float a1=((int)meaningful_clusters.at(i).size()*sumxy-sumx*sumy) /
-               ((int)meaningful_clusters.at(i).size()*sumx2-sumx*sumx);
-
-            if (a1 != a1)
-                data_arrays.at(i).push_back(1.f);
-            else
-                data_arrays.at(i).push_back(a1);
-
-            groups_rects.at(i) = group_rect;
-
-            // group probability mean
-            double group_probability_mean = 0;
-            // number of non-overlapping regions
-            vector<Rect> individual_components;
-
-            // The variance of several similarity features is also helpful
-            vector<float> strokes;
-            vector<float> grad_magnitudes;
-            vector<float> intensities;
-            vector<float> bg_intensities;
-
-            // We'll try to remove groups with repetitive patterns using averaged SAD
-            // SAD = Sum of Absolute Differences
-            Mat grey = img;
-            Mat sad = Mat::zeros(regions.at(c).at(meaningful_clusters.at(i).at(0)).rect.size() , CV_8UC1);
-            Mat region_mask = Mat::zeros(grey.rows+2, grey.cols+2, CV_8UC1);
-            float sad_value = 0;
-            Mat ratios = Mat::zeros(1, (int)meaningful_clusters.at(i).size(), CV_32FC1);
-            //Mat holes  = Mat::zeros(1, (int)meaningful_clusters.at(i).size(), CV_32FC1);
-
-            for (int j=0; j<(int)meaningful_clusters.at(i).size();j++)
-            {
-                ERStat *stat = &regions.at(c).at(meaningful_clusters.at(i).at(j));
-
-                //Fill the region
-                Mat region = region_mask(Rect(Point(stat->rect.x,stat->rect.y),
-                                              Point(stat->rect.br().x+2,stat->rect.br().y+2)));
-                region = Scalar(0);
-                int newMaskVal = 255;
-                int flags = 4 + (newMaskVal << 8) + FLOODFILL_FIXED_RANGE + FLOODFILL_MASK_ONLY;
-                Rect rect;
-
-                floodFill( grey(Rect(Point(stat->rect.x,stat->rect.y),Point(stat->rect.br().x,stat->rect.br().y))),
-                           region, Point(stat->pixel%grey.cols - stat->rect.x, stat->pixel/grey.cols - stat->rect.y),
-                           Scalar(255), &rect, Scalar(stat->level), Scalar(0), flags );
-
-                Mat mask = Mat::zeros(regions.at(c).at(meaningful_clusters.at(i).at(0)).rect.size() , CV_8UC1);
-                resize(region, mask, mask.size());
-                mask = mask - 254;
-                if (j!=0)
-                {
-                    // accumulate Sum of Absolute Differences
-                    absdiff(sad, mask, sad);
-                    Scalar s = sum(sad);
-                    sad_value += (float)s[0]/(sad.rows*sad.cols);
-                }
-                mask.copyTo(sad);
-                ratios.at<float>(0,j) = (float)min(stat->rect.width, stat->rect.height) /
-                                               max(stat->rect.width, stat->rect.height);
-                //holes.at<float>(0,j) = (float)stat->hole_area_ratio;
-
-                strokes.push_back((float)features.at(meaningful_clusters.at(i).at(j)).stroke_mean);
-                grad_magnitudes.push_back((float)features.at(meaningful_clusters.at(i).at(j)).gradient_mean);
-                intensities.push_back(features.at(meaningful_clusters.at(i).at(j)).intensity_mean);
-                bg_intensities.push_back(features.at(meaningful_clusters.at(i).at(j)).boundary_intensity_mean);
-                group_probability_mean += regions.at(c).at(meaningful_clusters.at(i).at(j)).probability;
-
-                if (j==0)
-                {
-                    group_rect = features.at(meaningful_clusters.at(i).at(j)).rect;
-                    individual_components.push_back(group_rect);
-                } else {
-                    bool matched = false;
-                    for (int k=0; k<(int)individual_components.size(); k++)
-                    {
-                        Rect intersection = individual_components.at(k) &
-                                            features.at(meaningful_clusters.at(i).at(j)).rect;
-
-                        if ((intersection == features.at(meaningful_clusters.at(i).at(j)).rect) ||
-                            (intersection == individual_components.at(k)))
-                        {
-                            individual_components.at(k) = individual_components.at(k) |
-                                                          features.at(meaningful_clusters.at(i).at(j)).rect;
-                            matched = true;
-                        }
-                    }
-
-                    if (!matched)
-                        individual_components.push_back(features.at(meaningful_clusters.at(i).at(j)).rect);
-
-                    group_rect = group_rect | features.at(meaningful_clusters.at(i).at(j)).rect;
-                }
-            }
-            group_probability_mean = group_probability_mean / meaningful_clusters.at(i).size();
-
-            data_arrays.at(i).insert(data_arrays.at(i).begin(),(float)individual_components.size());
-
-            // variance of widths and heights help to discriminate groups with high height variability
-            vector<int> widths;
-            vector<int> heights;
-            // the MST edge orientations histogram may be dominated by the horizontal axis orientation
-            Subdiv2D subdiv(Rect(0,0,src.at(0).cols,src.at(0).rows));
-
-            for (int r=0; r < (int)individual_components.size(); r++)
-            {
-                widths.push_back(individual_components.at(r).width);
-                heights.push_back(individual_components.at(r).height);
-
-                Point2f fp( (float)individual_components.at(r).x + individual_components.at(r).width/2,
-                            (float)individual_components.at(r).y + individual_components.at(r).height/2 );
-                subdiv.insert(fp);
-            }
-
-            Scalar mean, std;
-            meanStdDev(Mat(widths), mean, std);
-            data_arrays.at(i).push_back((float)(std[0]/mean[0]));
-            data_arrays.at(i).push_back((float)mean[0]);
-            meanStdDev(Mat(heights), mean, std);
-            data_arrays.at(i).push_back((float)(std[0]/mean[0]));
-
-            vector<Vec4f> edgeList;
-            subdiv.getEdgeList(edgeList);
-            std::sort (edgeList.begin(), edgeList.end(), edge_comp);
-            vector<Point> mst_vertices;
-
-            int horiz_edges = 0, non_horiz_edges = 0;
-            vector<float> edge_distances;
-
-            for( size_t k = 0; k < edgeList.size(); k++ )
-            {
-                Vec4f e = edgeList[k];
-                Point pt0 = Point(cvRound(e[0]), cvRound(e[1]));
-                Point pt1 = Point(cvRound(e[2]), cvRound(e[3]));
-                if (((pt0.x>0)&&(pt0.x<src.at(0).cols)&&(pt0.y>0)&&(pt0.y<src.at(0).rows) &&
-                     (pt1.x>0)&&(pt1.x<src.at(0).cols)&&(pt1.y>0)&&(pt1.y<src.at(0).rows)) &&
-                    ((!find_vertex(mst_vertices,pt0)) ||
-                     (!find_vertex(mst_vertices,pt1))))
-                {
-                    double angle = atan2((double)(pt0.y-pt1.y),(double)(pt0.x-pt1.x));
-                    //if ( (abs(angle) < 0.35) || (abs(angle) > 5.93) || ((abs(angle) > 2.79)&&(abs(angle) < 3.49)) )
-                    if ( (abs(angle) < 0.25) || (abs(angle) > 6.03) || ((abs(angle) > 2.88)&&(abs(angle) < 3.4)) )
-                    {
-                        horiz_edges++;
-                        edge_distances.push_back((float)norm(pt0-pt1));
-                    }
-                    else
-                        non_horiz_edges++;
-                    mst_vertices.push_back(pt0);
-                    mst_vertices.push_back(pt1);
-                }
-            }
-
-            if (horiz_edges == 0)
-                data_arrays.at(i).push_back(0.f);
-            else
-                data_arrays.at(i).push_back((float)horiz_edges/(horiz_edges+non_horiz_edges));
-
-            // remove groups where objects are not equidistant enough
-            Scalar dist_mean, dist_std;
-            meanStdDev(Mat(edge_distances),dist_mean, dist_std);
-            if (dist_std[0] == 0)
-                data_arrays.at(i).push_back(0.f);
-            else
-                data_arrays.at(i).push_back((float)(dist_std[0]/dist_mean[0]));
-
-            if (dist_mean[0] == 0)
-                data_arrays.at(i).push_back(0.f);
-            else
-                data_arrays.at(i).push_back((float)dist_mean[0]/data_arrays.at(i).at(3));
-
-            //meanStdDev( holes, mean, std);
-            //float holes_mean = (float)mean[0];
-            meanStdDev( ratios, mean, std);
-
-            data_arrays.at(i).push_back((float)sad_value / ((int)meaningful_clusters.at(i).size()-1));
-            meanStdDev( Mat(strokes), mean, std);
-            data_arrays.at(i).push_back((float)(std[0]/mean[0]));
-            meanStdDev( Mat(grad_magnitudes), mean, std);
-            data_arrays.at(i).push_back((float)(std[0]/mean[0]));
-            meanStdDev( Mat(intensities), mean, std);
-            data_arrays.at(i).push_back((float)std[0]);
-            meanStdDev( Mat(bg_intensities), mean, std);
-            data_arrays.at(i).push_back((float)std[0]);
-
-            // Validate only groups with more than 2 non-overlapping regions
-            if (data_arrays.at(i).at(0) > 2)
-            {
-                data_arrays.at(i).insert(data_arrays.at(i).begin(),0.f);
-                float votes = group_boost.predict( Mat(data_arrays.at(i)), Mat(), Range::all(), false, true );
-                // Logistic Correction returns a probability value (in the range(0,1))
-                double probability = (double)1-(double)1/(1+exp(-2*votes));
-
-                if (probability > minProbability)
-                    text_boxes.push_back(groups_rects.at(i));
-            }
-        }
-
+        meaningful_clusters.clear();
+        features.clear();
     }
+}
 
-    // check for colinear groups that can be merged
-    for (int i=0; i<(int)text_boxes.size(); i++)
+void erGrouping(InputArray image, InputArrayOfArrays channels, std::vector<std::vector<ERStat> > &regions,  std::vector<std::vector<Vec2i> > &groups,  std::vector<Rect> &groups_rects, int method, const std::string& filename, float minProbability)
+{
+    CV_Assert( image.getMat().type() == CV_8UC3 );
+    CV_Assert( !channels.empty() );
+    CV_Assert( !((method == ERGROUPING_GK) && (filename.empty())) );
+
+    switch (method)
     {
-        int ay1 = text_boxes.at(i).y;
-        int ay2 = text_boxes.at(i).y + text_boxes.at(i).height;
-        int ax1 = text_boxes.at(i).x;
-        int ax2 = text_boxes.at(i).x + text_boxes.at(i).width;
-        for (int j=(int)text_boxes.size()-1; j>i; j--)
-        {
-            int by1 = text_boxes.at(j).y;
-            int by2 = text_boxes.at(j).y + text_boxes.at(j).height;
-            int bx1 = text_boxes.at(j).x;
-            int bx2 = text_boxes.at(j).x + text_boxes.at(j).width;
-
-            int y_intersection = min(ay2,by2) - max(ay1,by1);
-
-            if (y_intersection > 0.6*(max(text_boxes.at(i).height,text_boxes.at(j).height)))
-            {
-                int xdist = min(abs(ax2-bx1),abs(bx2-ax1));
-                Rect intersection  = text_boxes.at(i) & text_boxes.at(j);
-                if ( (xdist < 0.75*(max(text_boxes.at(i).height,text_boxes.at(j).height))) ||
-                     (intersection.width != 0))
-                {
-                    text_boxes.at(i) = text_boxes.at(i) | text_boxes.at(j);
-                    text_boxes.erase(text_boxes.begin()+j);
-                }
-            }
-
-        }
+        case ERGROUPING_NM:
+            break;
+        case ERGROUPING_GK:
+            erGroupingGK(image, channels, regions, groups, groups_rects, filename, minProbability);
+            break;
     }
 
 }

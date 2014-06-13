@@ -258,9 +258,22 @@ CV_EXPORTS void computeNMChannels(InputArray _src, OutputArrayOfArrays _channels
     \param  minProbability The minimum probability for accepting a group
     \param  groups         The output of the algorithm are stored in this parameter as list of rectangles.
 */
-CV_EXPORTS void erGrouping(InputArrayOfArrays src, std::vector<std::vector<ERStat> > &regions,
-                                                   const std::string& filename, float minProbablity,
-                                                   std::vector<Rect > &groups);
+//CV_EXPORTS void erGrouping(InputArrayOfArrays src, std::vector<std::vector<ERStat> > &regions,
+//                                                   const std::string& filename, float minProbablity,
+//                                                   std::vector<Rect > &groups);
+
+// erGrouping operation modes
+enum { ERGROUPING_NM = 0,
+       ERGROUPING_GK = 1
+     };
+
+CV_EXPORTS void erGrouping(InputArray img, InputArrayOfArrays channels, 
+                                           std::vector<std::vector<ERStat> > &regions, 
+                                           std::vector<std::vector<Vec2i> > &groups, 
+                                           std::vector<Rect> &groups_rects, 
+                                           int method = ERGROUPING_NM, 
+                                           const std::string& filename = std::string(),
+                                           float minProbablity = 0.5);
 
 }
 #endif // _OPENCV_ERFILTER_HPP_
