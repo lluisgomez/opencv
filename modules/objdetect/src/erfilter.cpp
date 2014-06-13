@@ -3055,13 +3055,13 @@ void erGrouping(InputArray image, InputArrayOfArrays channels, std::vector<std::
 {
     CV_Assert( image.getMat().type() == CV_8UC3 );
     CV_Assert( !channels.empty() );
-    CV_Assert( !((method == ERGROUPING_GK) && (filename.empty())) );
+    CV_Assert( !((method == ERGROUPING_ORIENTATION_ANY) && (filename.empty())) );
 
     switch (method)
     {
-        case ERGROUPING_NM:
+        case ERGROUPING_ORIENTATION_HORIZ:
             break;
-        case ERGROUPING_GK:
+        case ERGROUPING_ORIENTATION_ANY:
             erGroupingGK(image, channels, regions, groups, groups_rects, filename, minProbability);
             break;
     }
