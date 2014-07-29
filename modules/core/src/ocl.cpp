@@ -1416,7 +1416,16 @@ bool useOpenCL()
 {
     CoreTLSData* data = coreTlsData.get();
     if( data->useOpenCL < 0 )
-        data->useOpenCL = (int)haveOpenCL() && Device::getDefault().ptr() != NULL;
+    {
+        try
+        {
+            data->useOpenCL = (int)haveOpenCL() && Device::getDefault().ptr() != NULL;
+        }
+        catch (...)
+        {
+            data->useOpenCL = 0;
+        }
+    }
     return data->useOpenCL > 0;
 }
 
@@ -2228,7 +2237,8 @@ static cl_device_id selectOpenCLDevice()
         if (!isID)
         {
             deviceTypes.push_back("GPU");
-            deviceTypes.push_back("CPU");
+            if (configuration)
+                deviceTypes.push_back("CPU");
         }
         else
             deviceTypes.push_back("ALL");
@@ -3484,9 +3494,8 @@ public:
     OpenCLBufferPoolImpl()
         : currentReservedSize(0), maxReservedSize(0)
     {
-        // Note: Buffer pool is disabled by default,
-        //       because we didn't receive significant performance improvement
-        maxReservedSize = getConfigurationParameterForSize("OPENCV_OPENCL_BUFFERPOOL_LIMIT", 0);
+        int poolSize = ocl::Device::getDefault().isIntel() ? 1 << 27 : 0;
+        maxReservedSize = getConfigurationParameterForSize("OPENCV_OPENCL_BUFFERPOOL_LIMIT", poolSize);
     }
     virtual ~OpenCLBufferPoolImpl()
     {
@@ -3729,6 +3738,7 @@ public:
                 u->handle = clCreateBuffer(ctx_handle, CL_MEM_COPY_HOST_PTR|CL_MEM_READ_WRITE|createFlags,
                                            u->size, u->origdata, &retval);
                 tempUMatFlags = UMatData::TEMP_COPIED_UMAT;
+
             }
             if(!u->handle || retval != CL_SUCCESS)
                 return false;
@@ -3870,6 +3880,7 @@ public:
                 if(u->data && retval == CL_SUCCESS)
                 {
                     u->markHostCopyObsolete(false);
+                    u->markDeviceMemMapped(true);
                     return;
                 }
 
@@ -3898,6 +3909,7 @@ public:
         if(!u)
             return;
 
+
         CV_Assert(u->handle != 0);
 
         UMatDataAutoLock autolock(u);
@@ -3908,8 +3920,10 @@ public:
 
         cl_command_queue q = (cl_command_queue)Queue::getDefault().ptr();
         cl_int retval = 0;
-        if( !u->copyOnMap() && u->data )
+        if( !u->copyOnMap() && u->deviceMemMapped() )
         {
+            CV_Assert(u->data != NULL);
+            u->markDeviceMemMapped(false);
             CV_Assert( (retval = clEnqueueUnmapMemObject(q,
                                 (cl_mem)u->handle, u->data, 0, 0, 0)) == CL_SUCCESS );
             CV_OclDbgAssert(clFinish(q) == CL_SUCCESS);
@@ -4406,8 +4420,8 @@ String kernelToStr(InputArray _kernel, int ddepth, const char * name)
             CV_Assert(src.isMat() || src.isUMat()); \
             int ctype = src.type(), ccn = CV_MAT_CN(ctype); \
             Size csize = src.size(); \
-            cols.push_back(ccn * src.size().width); \
-            if (ctype != type || csize != ssize) \
+            cols.push_back(ccn * csize.width); \
+            if (ctype != type) \
                 return 1; \
             offsets.push_back(src.offset()); \
             steps.push_back(src.step()); \
@@ -4419,16 +4433,24 @@ int predictOptimalVectorWidth(InputArray src1, InputArray src2, InputArray src3,
                               InputArray src4, InputArray src5, InputArray src6,
                               InputArray src7, InputArray src8, InputArray src9)
 {
-    int type = src1.type(), depth = CV_MAT_DEPTH(type), cn = CV_MAT_CN(type), esz = CV_ELEM_SIZE(depth);
+    int type = src1.type(), depth = CV_MAT_DEPTH(type), cn = CV_MAT_CN(type), esz1 = CV_ELEM_SIZE1(depth);
     Size ssize = src1.size();
     const ocl::Device & d = ocl::Device::getDefault();
 
     int vectorWidths[] = { d.preferredVectorWidthChar(), d.preferredVectorWidthChar(),
         d.preferredVectorWidthShort(), d.preferredVectorWidthShort(),
         d.preferredVectorWidthInt(), d.preferredVectorWidthFloat(),
-        d.preferredVectorWidthDouble(), -1 }, width = vectorWidths[depth];
+        d.preferredVectorWidthDouble(), -1 }, kercn = vectorWidths[depth];
 
-    if (ssize.width * cn < width || width <= 0)
+    // if the device says don't use vectors
+    if (vectorWidths[0] == 1)
+    {
+        // it's heuristic
+        int vectorWidthsOthers[] = { 16, 16, 8, 8, 1, 1, 1, -1 };
+        kercn = vectorWidthsOthers[depth];
+    }
+
+    if (ssize.width * cn < kercn || kercn <= 0)
         return 1;
 
     std::vector<size_t> offsets, steps, cols;
@@ -4443,7 +4465,7 @@ int predictOptimalVectorWidth(InputArray src1, InputArray src2, InputArray src3,
     PROCESS_SRC(src9);
 
     size_t size = offsets.size();
-    int wsz = width * esz;
+    int wsz = kercn * esz1;
     std::vector<int> dividers(size, wsz);
 
     for (size_t i = 0; i < size; ++i)
@@ -4454,14 +4476,14 @@ int predictOptimalVectorWidth(InputArray src1, InputArray src2, InputArray src3,
     for (size_t i = 0; i < size; ++i)
         if (dividers[i] != wsz)
         {
-            width = 1;
+            kercn = 1;
             break;
         }
 
     // another strategy
 //    width = *std::min_element(dividers.begin(), dividers.end());
 
-    return width;
+    return kercn;
 }
 
 #undef PROCESS_SRC
@@ -4585,7 +4607,7 @@ struct Image2D::Impl
         CV_OclDbgAssert(err == CL_SUCCESS);
 
         size_t origin[] = { 0, 0, 0 };
-        size_t region[] = { src.cols, src.rows, 1 };
+        size_t region[] = { static_cast<size_t>(src.cols), static_cast<size_t>(src.rows), 1 };
 
         cl_mem devData;
         if (!alias && !src.isContinuous())
@@ -4593,7 +4615,7 @@ struct Image2D::Impl
             devData = clCreateBuffer(context, CL_MEM_READ_ONLY, src.cols * src.rows * src.elemSize(), NULL, &err);
             CV_OclDbgAssert(err == CL_SUCCESS);
 
-            const size_t roi[3] = {src.cols * src.elemSize(), src.rows, 1};
+            const size_t roi[3] = {static_cast<size_t>(src.cols) * src.elemSize(), static_cast<size_t>(src.rows), 1};
             CV_Assert(clEnqueueCopyBufferRect(queue, (cl_mem)src.handle(ACCESS_READ), devData, origin, origin,
                 roi, src.step, 0, src.cols * src.elemSize(), 0, 0, NULL, NULL) == CL_SUCCESS);
             CV_OclDbgAssert(clFlush(queue) == CL_SUCCESS);

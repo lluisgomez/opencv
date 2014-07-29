@@ -84,7 +84,6 @@ catch (const cv::Exception &e) \
 using namespace cv;
 using cv::flann::IndexParams;
 using cv::flann::SearchParams;
-using cv::softcascade::ChannelFeatureBuilder;
 
 typedef std::vector<uchar> vector_uchar;
 typedef std::vector<char> vector_char;
@@ -110,8 +109,6 @@ typedef std::vector<std::vector<Point> > vector_vector_Point;
 typedef std::vector<std::vector<Point2f> > vector_vector_Point2f;
 typedef std::vector<std::vector<Point3f> > vector_vector_Point3f;
 typedef std::vector<std::vector<DMatch> > vector_vector_DMatch;
-
-typedef cv::softcascade::ChannelFeatureBuilder softcascade_ChannelFeatureBuilder;
 
 typedef SimpleBlobDetector::Params SimpleBlobDetector_Params;
 
@@ -999,19 +996,18 @@ template<>
 bool pyopencv_to(PyObject *o, cv::flann::IndexParams& p, const char *name)
 {
     (void)name;
-    bool ok = false;
-    PyObject* keys = PyObject_CallMethod(o,(char*)"keys",0);
-    PyObject* values = PyObject_CallMethod(o,(char*)"values",0);
+    bool ok = true;
+    PyObject* key = NULL;
+    PyObject* item = NULL;
+    Py_ssize_t pos = 0;
 
-    if( keys && values )
-    {
-        int i, n = (int)PyList_GET_SIZE(keys);
-        for( i = 0; i < n; i++ )
-        {
-            PyObject* key = PyList_GET_ITEM(keys, i);
-            PyObject* item = PyList_GET_ITEM(values, i);
-            if( !PyString_Check(key) )
+    if(PyDict_Check(o)) {
+        while(PyDict_Next(o, &pos, &key, &item)) {
+            if( !PyString_Check(key) ) {
+                ok = false;
                 break;
+            }
+
             String k = PyString_AsString(key);
             if( PyString_Check(item) )
             {
@@ -1034,14 +1030,14 @@ bool pyopencv_to(PyObject *o, cv::flann::IndexParams& p, const char *name)
                 p.setDouble(k, value);
             }
             else
+            {
+                ok = false;
                 break;
+            }
         }
-        ok = i == n && !PyErr_Occurred();
     }
 
-    Py_XDECREF(keys);
-    Py_XDECREF(values);
-    return ok;
+    return ok && !PyErr_Occurred();
 }
 
 template<>
