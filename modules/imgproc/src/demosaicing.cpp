@@ -368,7 +368,8 @@ public:
             uint16x8_t g0 = vaddq_u16(vshrq_n_u16(r0, 8), vshrq_n_u16(r2, 8));
             uint16x8_t g1 = vandq_u16(r1, masklo);
             g0 = vaddq_u16(g0, vaddq_u16(g1, vextq_u16(g1, g1, 1)));
-            g1 = vshlq_n_u16(vextq_u16(g1, g1, 1), 2);
+            uint16x8_t rot = vextq_u16(g1, g1, 1);
+            g1 = vshlq_n_u16(rot, 2);
             // g0 = b0 b2 b4 ...
             // g1 = b1 b3 b5 ...
 
@@ -515,7 +516,7 @@ public:
         const int G2Y = 9617;
         const int SHIFT = 14;
 
-        const T* bayer0 = (const T*)srcmat.data;
+        const T* bayer0 = srcmat.ptr<T>();
         int bayer_step = (int)(srcmat.step/sizeof(T));
         T* dst0 = (T*)dstmat.data;
         int dst_step = (int)(dstmat.step/sizeof(T));
@@ -632,7 +633,7 @@ static void Bayer2Gray_( const Mat& srcmat, Mat& dstmat, int code )
     }
 
     size = dstmat.size();
-    T* dst0 = (T*)dstmat.data;
+    T* dst0 = dstmat.ptr<T>();
     int dst_step = (int)(dstmat.step/sizeof(T));
     if( size.height > 2 )
         for( int i = 0; i < size.width; i++ )
@@ -676,7 +677,7 @@ public:
         int dcn2 = dcn << 1;
 
         int bayer_step = (int)(srcmat.step/sizeof(T));
-        const T* bayer0 = reinterpret_cast<const T*>(srcmat.data) + bayer_step * range.start;
+        const T* bayer0 = srcmat.ptr<T>() + bayer_step * range.start;
 
         int dst_step = (int)(dstmat.step/sizeof(T));
         T* dst0 = reinterpret_cast<T*>(dstmat.data) + (range.start + 1) * dst_step + dcn + 1;
@@ -893,7 +894,7 @@ static void Bayer2RGB_( const Mat& srcmat, Mat& dstmat, int code )
 
     // filling the first and the last rows
     size = dstmat.size();
-    T* dst0 = (T*)dstmat.data;
+    T* dst0 = dstmat.ptr<T>();
     if( size.height > 2 )
         for( int i = 0; i < size.width*dcn; i++ )
         {
@@ -910,9 +911,9 @@ static void Bayer2RGB_( const Mat& srcmat, Mat& dstmat, int code )
 
 static void Bayer2RGB_VNG_8u( const Mat& srcmat, Mat& dstmat, int code )
 {
-    const uchar* bayer = srcmat.data;
+    const uchar* bayer = srcmat.ptr();
     int bstep = (int)srcmat.step;
-    uchar* dst = dstmat.data;
+    uchar* dst = dstmat.ptr();
     int dststep = (int)dstmat.step;
     Size size = srcmat.size();
 
@@ -1482,7 +1483,7 @@ public:
         int sstep = int(src.step / src.elemSize1()), dstep = int(dst.step / dst.elemSize1());
         SIMDInterpolator vecOp;
 
-        const T* S = reinterpret_cast<const T*>(src.data + (range.start + 1) * src.step) + 1;
+        const T* S = src.ptr<T>(range.start + 1) + 1;
         T* D = reinterpret_cast<T*>(dst.data + (range.start + 1) * dst.step) + dcn;
 
         if (range.start % 2)
@@ -1589,8 +1590,8 @@ static void Bayer2RGB_EdgeAware_T(const Mat& src, Mat& dst, int code)
     size = dst.size();
     size.width *= dst.channels();
     size_t dstep = dst.step / dst.elemSize1();
-    T* firstRow = reinterpret_cast<T*>(dst.data);
-    T* lastRow = reinterpret_cast<T*>(dst.data) + (size.height-1) * dstep;
+    T* firstRow = dst.ptr<T>();
+    T* lastRow = dst.ptr<T>() + (size.height-1) * dstep;
 
     if (size.height > 2)
     {

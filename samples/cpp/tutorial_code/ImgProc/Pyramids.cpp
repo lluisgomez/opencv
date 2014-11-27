@@ -32,8 +32,8 @@ int main( void )
   printf( " * [ESC] -> Close program \n \n" );
 
   /// Test image - Make sure it s divisible by 2^{n}
-  src = imread( "../images/chicky_512.png" );
-  if( !src.data )
+  src = imread( "../data/chicky_512.png" );
+  if( src.empty() )
     { printf(" No data! -- Exiting the program \n");
       return -1; }
 

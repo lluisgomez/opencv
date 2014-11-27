@@ -88,7 +88,7 @@ struct StereoBMParams
 
 static bool ocl_prefilter_norm(InputArray _input, OutputArray _output, int winsize, int prefilterCap)
 {
-    ocl::Kernel k("prefilter_norm", ocl::calib3d::stereobm_oclsrc);
+    ocl::Kernel k("prefilter_norm", ocl::calib3d::stereobm_oclsrc, cv::format("-D WSZ=%d", winsize));
     if(k.empty())
         return false;
 
@@ -102,7 +102,7 @@ static bool ocl_prefilter_norm(InputArray _input, OutputArray _output, int winsi
     size_t globalThreads[3] = { input.cols, input.rows, 1 };
 
     k.args(ocl::KernelArg::PtrReadOnly(input), ocl::KernelArg::PtrWriteOnly(output), input.rows, input.cols,
-        prefilterCap, winsize, scale_g, scale_s);
+        prefilterCap, scale_g, scale_s);
 
     return k.run(2, globalThreads, NULL, false);
 }
@@ -114,7 +114,7 @@ static void prefilterNorm( const Mat& src, Mat& dst, int winsize, int ftzero, uc
     int scale_g = winsize*winsize/8, scale_s = (1024 + scale_g)/(scale_g*2);
     const int OFS = 256*5, TABSZ = OFS*2 + 256;
     uchar tab[TABSZ];
-    const uchar* sptr = src.data;
+    const uchar* sptr = src.ptr();
     int srcstep = (int)src.step;
     Size size = src.size();
 
@@ -294,10 +294,10 @@ static void findStereoCorrespondenceBM_SSE2( const Mat& left, const Mat& right,
     ushort *sad, *hsad0, *hsad, *hsad_sub;
     int *htext;
     uchar *cbuf0, *cbuf;
-    const uchar* lptr0 = left.data + lofs;
-    const uchar* rptr0 = right.data + rofs;
+    const uchar* lptr0 = left.ptr() + lofs;
+    const uchar* rptr0 = right.ptr() + rofs;
     const uchar *lptr, *lptr_sub, *rptr;
-    short* dptr = (short*)disp.data;
+    short* dptr = disp.ptr<short>();
     int sstep = (int)left.step;
     int dstep = (int)(disp.step/sizeof(dptr[0]));
     int cstep = (height + dy0 + dy1)*ndisp;
@@ -357,7 +357,7 @@ static void findStereoCorrespondenceBM_SSE2( const Mat& left, const Mat& right,
 
     for( x = 0; x < width1; x++, dptr++ )
     {
-        short* costptr = cost.data ? (short*)cost.data + lofs + x : &costbuf;
+        short* costptr = cost.data ? cost.ptr<short>() + lofs + x : &costbuf;
         int x0 = x - wsz2 - 1, x1 = x + wsz2;
         const uchar* cbuf_sub = cbuf0 + ((x0 + wsz2 + 1) % (wsz + 1))*cstep - dy0*ndisp;
         cbuf = cbuf0 + ((x1 + wsz2 + 1) % (wsz + 1))*cstep - dy0*ndisp;
@@ -542,10 +542,10 @@ findStereoCorrespondenceBM( const Mat& left, const Mat& right,
 
     int *sad, *hsad0, *hsad, *hsad_sub, *htext;
     uchar *cbuf0, *cbuf;
-    const uchar* lptr0 = left.data + lofs;
-    const uchar* rptr0 = right.data + rofs;
+    const uchar* lptr0 = left.ptr() + lofs;
+    const uchar* rptr0 = right.ptr() + rofs;
     const uchar *lptr, *lptr_sub, *rptr;
-    short* dptr = (short*)disp.data;
+    short* dptr = disp.ptr<short>();
     int sstep = (int)left.step;
     int dstep = (int)(disp.step/sizeof(dptr[0]));
     int cstep = (height+dy0+dy1)*ndisp;
@@ -596,7 +596,7 @@ findStereoCorrespondenceBM( const Mat& left, const Mat& right,
 
     for( x = 0; x < width1; x++, dptr++ )
     {
-        int* costptr = cost.data ? (int*)cost.data + lofs + x : &costbuf;
+        int* costptr = cost.data ? cost.ptr<int>() + lofs + x : &costbuf;
         int x0 = x - wsz2 - 1, x1 = x + wsz2;
         const uchar* cbuf_sub = cbuf0 + ((x0 + wsz2 + 1) % (wsz + 1))*cstep - dy0*ndisp;
         cbuf = cbuf0 + ((x1 + wsz2 + 1) % (wsz + 1))*cstep - dy0*ndisp;
@@ -743,9 +743,16 @@ static bool ocl_stereobm( InputArray _left, InputArray _right,
     int wsz = state->SADWindowSize;
     int wsz2 = wsz/2;
 
-    int sizeX = std::max(11, 27 - ocl::Device::getDefault().maxComputeUnits() ), sizeY = sizeX-1, N = ndisp*2;
+    ocl::Device devDef = ocl::Device::getDefault();
+    int sizeX = devDef.isIntel() ? 32 : std::max(11, 27 - devDef.maxComputeUnits()),
+        sizeY = sizeX - 1,
+        N = ndisp * 2;
 
-    ocl::Kernel k("stereoBM", ocl::calib3d::stereobm_oclsrc, cv::format("-D csize=%d -D wsz=%d", (2*sizeY)*ndisp, wsz) );
+    cv::String opt = cv::format("-D DEFINE_KERNEL_STEREOBM -D MIN_DISP=%d -D NUM_DISP=%d"
+                                " -D BLOCK_SIZE_X=%d -D BLOCK_SIZE_Y=%d -D WSZ=%d",
+                                mindisp, ndisp,
+                                sizeX, sizeY, wsz);
+    ocl::Kernel k("stereoBM", ocl::calib3d::stereobm_oclsrc, opt);
     if(k.empty())
         return false;
 
@@ -753,15 +760,14 @@ static bool ocl_stereobm( InputArray _left, InputArray _right,
     int cols = left.cols, rows = left.rows;
 
     _disp.create(_left.size(), CV_16S);
-    _disp.setTo((mindisp - 1)<<4);
+    _disp.setTo((mindisp - 1) << 4);
     Rect roi = Rect(Point(wsz2 + mindisp + ndisp - 1, wsz2), Point(cols-wsz2-mindisp, rows-wsz2) );
     UMat disp = (_disp.getUMat())(roi);
 
-    int globalX = disp.cols/sizeX, globalY = disp.rows/sizeY;
-    globalX += (disp.cols%sizeX) > 0 ? 1 : 0;
-    globalY += (disp.rows%sizeY) > 0 ? 1 : 0;
-    size_t globalThreads[3] = { globalX, globalY, N};
-    size_t localThreads[3] = {1, 1, N};
+    int globalX = (disp.cols + sizeX - 1) / sizeX,
+        globalY = (disp.rows + sizeY - 1) / sizeY;
+    size_t globalThreads[3] = {N, globalX, globalY};
+    size_t localThreads[3]  = {N, 1, 1};
 
     int idx = 0;
     idx = k.set(idx, ocl::KernelArg::PtrReadOnly(left));
@@ -769,15 +775,8 @@ static bool ocl_stereobm( InputArray _left, InputArray _right,
     idx = k.set(idx, ocl::KernelArg::WriteOnlyNoSize(disp));
     idx = k.set(idx, rows);
     idx = k.set(idx, cols);
-    idx = k.set(idx, mindisp);
-    idx = k.set(idx, ndisp);
-    idx = k.set(idx, state->preFilterCap);
     idx = k.set(idx, state->textureThreshold);
     idx = k.set(idx, state->uniquenessRatio);
-    idx = k.set(idx, sizeX);
-    idx = k.set(idx, sizeY);
-    idx = k.set(idx, wsz);
-
     return k.run(3, globalThreads, localThreads, false);
 }
 
@@ -803,7 +802,7 @@ struct FindStereoCorrespInvoker : public ParallelLoopBody
         int cols = left->cols, rows = left->rows;
         int _row0 = std::min(cvRound(range.start * rows / nstripes), rows);
         int _row1 = std::min(cvRound(range.end * rows / nstripes), rows);
-        uchar *ptr = slidingSumBuf->data + range.start * stripeBufSize;
+        uchar *ptr = slidingSumBuf->ptr() + range.start * stripeBufSize;
         int FILTERED = (state->minDisparity - 1)*16;
 
         Rect roi = validDisparityRect & Rect(0, _row0, cols, _row1 - _row0);
@@ -925,6 +924,7 @@ public:
                         filterSpeckles(disparr.getMat(), FILTERED, params.speckleWindowSize, params.speckleRange, slidingSumBuf);
                     if (dtype == CV_32F)
                         disparr.getUMat().convertTo(disparr, CV_32FC1, 1./(1 << DISPARITY_SHIFT), 0);
+                    CV_IMPL_ADD(CV_IMPL_OCL);
                     return;
                 }
             }
@@ -988,7 +988,7 @@ public:
         if( slidingSumBuf.cols < bufSize )
             slidingSumBuf.create( 1, bufSize, CV_8U );
 
-        uchar *_buf = slidingSumBuf.data;
+        uchar *_buf = slidingSumBuf.ptr();
 
         parallel_for_(Range(0, 2), PrefilterInvoker(left0, right0, left, right, _buf, _buf + bufSize1, &params), 1);
 
@@ -1097,11 +1097,11 @@ public:
 
 const char* StereoBMImpl::name_ = "StereoMatcher.BM";
 
-}
-
-cv::Ptr<cv::StereoBM> cv::createStereoBM(int _numDisparities, int _SADWindowSize)
+Ptr<StereoBM> StereoBM::create(int _numDisparities, int _SADWindowSize)
 {
     return makePtr<StereoBMImpl>(_numDisparities, _SADWindowSize);
+}
+
 }
 
 /* End of file. */

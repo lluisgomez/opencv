@@ -554,12 +554,18 @@ DFT( const Complex<T>* src, Complex<T>* dst, int n,
         if( !inv )
         {
             if (ippsDFTFwd_CToC( src, dst, spec, (uchar*)buf ) >= 0)
+            {
+                CV_IMPL_ADD(CV_IMPL_IPP);
                 return;
+            }
         }
         else
         {
             if (ippsDFTInv_CToC( src, dst, spec, (uchar*)buf ) >= 0)
+            {
+                CV_IMPL_ADD(CV_IMPL_IPP);
                 return;
+            }
         }
         setIppErrorStatus();
     }
@@ -997,6 +1003,7 @@ RealDFT( const T* src, T* dst, int n, int nf, int* factors, const int* itab,
                 if( (n & 1) == 0 )
                     dst[n] = 0;
             }
+            CV_IMPL_ADD(CV_IMPL_IPP);
             return;
         }
         setIppErrorStatus();
@@ -1124,7 +1131,12 @@ CCSIDFT( const T* src, T* dst, int n, int nf, int* factors, const int* itab,
     if( spec )
     {
         if (ippsDFTInv_PackToR( src, dst, spec, (uchar*)buf ) >=0)
-            goto finalize;
+        {
+            if( complex_input )
+                ((T*)src)[0] = (T)save_s1;
+            CV_IMPL_ADD(CV_IMPL_IPP);
+            return;
+        }
 
         setIppErrorStatus();
     }
@@ -1249,10 +1261,6 @@ CCSIDFT( const T* src, T* dst, int n, int nf, int* factors, const int* itab,
             dst[j+1] = t1;
         }
     }
-
-#ifdef USE_IPP_DFT
-finalize:
-#endif
     if( complex_input )
         ((T*)src)[0] = (T)save_s1;
 }
@@ -1547,7 +1555,7 @@ public:
         }
 
         for( int i = range.start; i < range.end; ++i)
-            if(!ippidft((Ipp32fc*)(src.data+i*src.step), (int)src.step,(Ipp32fc*)(dst.data+i*dst.step), (int)dst.step, pDFTSpec, (Ipp8u*)pBuffer))
+            if(!ippidft(src.ptr<Ipp32fc>(i), (int)src.step,dst.ptr<Ipp32fc>(i), (int)dst.step, pDFTSpec, (Ipp8u*)pBuffer))
             {
                 *ok = false;
             }
@@ -1556,6 +1564,7 @@ public:
             ippFree( pBuffer );
 
         ippFree( pDFTSpec );
+        CV_IMPL_ADD(CV_IMPL_IPP|CV_IMPL_MT);
     }
 
 private:
@@ -1629,6 +1638,7 @@ public:
             ippFree( pBuffer );
 
         ippFree( pDFTSpec );
+        CV_IMPL_ADD(CV_IMPL_IPP|CV_IMPL_MT);
     }
 
 private:
@@ -1718,17 +1728,22 @@ static bool ippi_DFT_C_32F(const Mat& src, Mat& dst, bool inv, int norm_flag)
     }
 
     if (!inv)
-        status = ippiDFTFwd_CToC_32fc_C1R( (Ipp32fc*)src.data, (int)src.step, (Ipp32fc*)dst.data, (int)dst.step, pDFTSpec, pBuffer );
+        status = ippiDFTFwd_CToC_32fc_C1R( src.ptr<Ipp32fc>(), (int)src.step, dst.ptr<Ipp32fc>(), (int)dst.step, pDFTSpec, pBuffer );
     else
-        status = ippiDFTInv_CToC_32fc_C1R( (Ipp32fc*)src.data, (int)src.step, (Ipp32fc*)dst.data, (int)dst.step, pDFTSpec, pBuffer );
+        status = ippiDFTInv_CToC_32fc_C1R( src.ptr<Ipp32fc>(), (int)src.step, dst.ptr<Ipp32fc>(), (int)dst.step, pDFTSpec, pBuffer );
 
     if ( sizeBuffer > 0 )
         ippFree( pBuffer );
 
     ippFree( pDFTSpec );
 
-    return status >= 0;
+    if(status >= 0)
+    {
+        CV_IMPL_ADD(CV_IMPL_IPP);
+        return true;
     }
+    return false;
+}
 
 static bool ippi_DFT_R_32F(const Mat& src, Mat& dst, bool inv, int norm_flag)
 {
@@ -1776,7 +1791,12 @@ static bool ippi_DFT_R_32F(const Mat& src, Mat& dst, bool inv, int norm_flag)
 
     ippFree( pDFTSpec );
 
-    return status >= 0;
+    if(status >= 0)
+    {
+        CV_IMPL_ADD(CV_IMPL_IPP);
+        return true;
+    }
+    return false;
 }
 
 #endif
@@ -1802,11 +1822,14 @@ private:
     String buildOptions;
     int thread_count;
     int dft_size;
+    int dft_depth;
     bool status;
 
 public:
-    OCL_FftPlan(int _size) : dft_size(_size), status(true)
+    OCL_FftPlan(int _size, int _depth) : dft_size(_size), dft_depth(_depth), status(true)
     {
+        CV_Assert( dft_depth == CV_32F || dft_depth == CV_64F );
+
         int min_radix;
         std::vector<int> radixes, blocks;
         ocl_getRadixes(dft_size, radixes, blocks, min_radix);
@@ -1832,31 +1855,15 @@ public:
             n *= radix;
         }
 
-        Mat tw(1, twiddle_size, CV_32FC2);
-        float* ptr = tw.ptr<float>();
-        int ptr_index = 0;
+        twiddles.create(1, twiddle_size, CV_MAKE_TYPE(dft_depth, 2));
+        if (dft_depth == CV_32F)
+            fillRadixTable<float>(twiddles, radixes);
+        else
+            fillRadixTable<double>(twiddles, radixes);
 
-        n = 1;
-        for (size_t i=0; i<radixes.size(); i++)
-        {
-            int radix = radixes[i];
-            n *= radix;
-
-            for (int j=1; j<radix; j++)
-            {
-                double theta = -CV_2PI*j/n;
-
-                for (int k=0; k<(n/radix); k++)
-                {
-                    ptr[ptr_index++] = (float) cos(k*theta);
-                    ptr[ptr_index++] = (float) sin(k*theta);
-                }
-            }
-        }
-        twiddles = tw.getUMat(ACCESS_READ);
-
-        buildOptions = format("-D LOCAL_SIZE=%d -D kercn=%d -D RADIX_PROCESS=%s",
-                              dft_size, min_radix, radix_processing.c_str());
+        buildOptions = format("-D LOCAL_SIZE=%d -D kercn=%d -D FT=%s -D CT=%s%s -D RADIX_PROCESS=%s",
+                              dft_size, min_radix, ocl::typeToStr(dft_depth), ocl::typeToStr(CV_MAKE_TYPE(dft_depth, 2)),
+                              dft_depth == CV_64F ? " -D DOUBLE_SUPPORT" : "", radix_processing.c_str());
     }
 
     bool enqueueTransform(InputArray _src, OutputArray _dst, int num_dfts, int flags, int fftType, bool rows = true) const
@@ -1913,7 +1920,7 @@ public:
         if (k.empty())
             return false;
 
-        k.args(ocl::KernelArg::ReadOnly(src), ocl::KernelArg::WriteOnly(dst), ocl::KernelArg::PtrReadOnly(twiddles), thread_count, num_dfts);
+        k.args(ocl::KernelArg::ReadOnly(src), ocl::KernelArg::WriteOnly(dst), ocl::KernelArg::ReadOnlyNoSize(twiddles), thread_count, num_dfts);
         return k.run(2, globalsize, localsize, false);
     }
 
@@ -1986,6 +1993,32 @@ private:
             min_radix = min(min_radix, block*radix);
         }
     }
+
+    template <typename T>
+    static void fillRadixTable(UMat twiddles, const std::vector<int>& radixes)
+    {
+        Mat tw = twiddles.getMat(ACCESS_WRITE);
+        T* ptr = tw.ptr<T>();
+        int ptr_index = 0;
+
+        int n = 1;
+        for (size_t i=0; i<radixes.size(); i++)
+        {
+            int radix = radixes[i];
+            n *= radix;
+
+            for (int j=1; j<radix; j++)
+            {
+                double theta = -CV_2PI*j/n;
+
+                for (int k=0; k<(n/radix); k++)
+                {
+                    ptr[ptr_index++] = (T) cos(k*theta);
+                    ptr[ptr_index++] = (T) sin(k*theta);
+                }
+            }
+        }
+    }
 };
 
 class OCL_FftPlanCache
@@ -1997,17 +2030,18 @@ public:
         return planCache;
     }
 
-    Ptr<OCL_FftPlan> getFftPlan(int dft_size)
+    Ptr<OCL_FftPlan> getFftPlan(int dft_size, int depth)
     {
-        std::map<int, Ptr<OCL_FftPlan> >::iterator f = planStorage.find(dft_size);
+        int key = (dft_size << 16) | (depth & 0xFFFF);
+        std::map<int, Ptr<OCL_FftPlan> >::iterator f = planStorage.find(key);
         if (f != planStorage.end())
         {
             return f->second;
         }
         else
         {
-            Ptr<OCL_FftPlan> newPlan = Ptr<OCL_FftPlan>(new OCL_FftPlan(dft_size));
-            planStorage[dft_size] = newPlan;
+            Ptr<OCL_FftPlan> newPlan = Ptr<OCL_FftPlan>(new OCL_FftPlan(dft_size, depth));
+            planStorage[key] = newPlan;
             return newPlan;
         }
     }
@@ -2027,21 +2061,25 @@ protected:
 
 static bool ocl_dft_rows(InputArray _src, OutputArray _dst, int nonzero_rows, int flags, int fftType)
 {
-    Ptr<OCL_FftPlan> plan = OCL_FftPlanCache::getInstance().getFftPlan(_src.cols());
+    int type = _src.type(), depth = CV_MAT_DEPTH(type);
+    Ptr<OCL_FftPlan> plan = OCL_FftPlanCache::getInstance().getFftPlan(_src.cols(), depth);
     return plan->enqueueTransform(_src, _dst, nonzero_rows, flags, fftType, true);
 }
 
 static bool ocl_dft_cols(InputArray _src, OutputArray _dst, int nonzero_cols, int flags, int fftType)
 {
-    Ptr<OCL_FftPlan> plan = OCL_FftPlanCache::getInstance().getFftPlan(_src.rows());
+    int type = _src.type(), depth = CV_MAT_DEPTH(type);
+    Ptr<OCL_FftPlan> plan = OCL_FftPlanCache::getInstance().getFftPlan(_src.rows(), depth);
     return plan->enqueueTransform(_src, _dst, nonzero_cols, flags, fftType, false);
 }
 
 static bool ocl_dft(InputArray _src, OutputArray _dst, int flags, int nonzero_rows)
 {
-    int type = _src.type(), cn = CV_MAT_CN(type);
+    int type = _src.type(), cn = CV_MAT_CN(type), depth = CV_MAT_DEPTH(type);
     Size ssize = _src.size();
-    if ( !(type == CV_32FC1 || type == CV_32FC2) )
+    bool doubleSupport = ocl::Device::getDefault().doubleFPConfig() > 0;
+
+    if ( !((cn == 1 || cn == 2) && (depth == CV_32F || (depth == CV_64F && doubleSupport))) )
         return false;
 
     // if is not a multiplication of prime numbers { 2, 3, 5 }
@@ -2082,7 +2120,7 @@ static bool ocl_dft(InputArray _src, OutputArray _dst, int flags, int nonzero_ro
     if (fftType == C2C || fftType == R2C)
     {
         // complex output
-        _dst.create(src.size(), CV_32FC2);
+        _dst.create(src.size(), CV_MAKETYPE(depth, 2));
         output = _dst.getUMat();
     }
     else
@@ -2090,13 +2128,13 @@ static bool ocl_dft(InputArray _src, OutputArray _dst, int flags, int nonzero_ro
         // real output
         if (is1d)
         {
-            _dst.create(src.size(), CV_32FC1);
+            _dst.create(src.size(), CV_MAKETYPE(depth, 1));
             output = _dst.getUMat();
         }
         else
         {
-            _dst.create(src.size(), CV_32FC1);
-            output.create(src.size(), CV_32FC2);
+            _dst.create(src.size(), CV_MAKETYPE(depth, 1));
+            output.create(src.size(), CV_MAKETYPE(depth, 2));
         }
     }
 
@@ -2437,39 +2475,53 @@ void cv::dft( InputArray _src0, OutputArray _dst, int flags, int nonzero_rows )
     Mat dst = _dst.getMat();
 
 #if defined USE_IPP_DFT
-
-    if ((src.depth() == CV_32F) && (src.total()>(int)(1<<6)) && nonzero_rows == 0)
+    CV_IPP_CHECK()
     {
-        if ((flags & DFT_ROWS) == 0)
+        if ((src.depth() == CV_32F) && (src.total()>(int)(1<<6)) && nonzero_rows == 0)
         {
-            if (src.channels() == 2 && !(inv && (flags & DFT_REAL_OUTPUT)))
+            if ((flags & DFT_ROWS) == 0)
             {
-                if (ippi_DFT_C_32F(src, dst, inv, ipp_norm_flag))
-                    return;
-                setIppErrorStatus();
+                if (src.channels() == 2 && !(inv && (flags & DFT_REAL_OUTPUT)))
+                {
+                    if (ippi_DFT_C_32F(src, dst, inv, ipp_norm_flag))
+                    {
+                        CV_IMPL_ADD(CV_IMPL_IPP);
+                        return;
+                    }
+                    setIppErrorStatus();
+                }
+                if (src.channels() == 1 && (inv || !(flags & DFT_COMPLEX_OUTPUT)))
+                {
+                    if (ippi_DFT_R_32F(src, dst, inv, ipp_norm_flag))
+                    {
+                        CV_IMPL_ADD(CV_IMPL_IPP);
+                        return;
+                    }
+                    setIppErrorStatus();
+                }
             }
-            if (src.channels() == 1 && (inv || !(flags & DFT_COMPLEX_OUTPUT)))
+            else
             {
-                if (ippi_DFT_R_32F(src, dst, inv, ipp_norm_flag))
-                    return;
-                setIppErrorStatus();
-            }
-        }
-        else
-        {
-            if (src.channels() == 2 && !(inv && (flags & DFT_REAL_OUTPUT)))
-            {
-                ippiDFT_C_Func ippiFunc = inv ? (ippiDFT_C_Func)ippiDFTInv_CToC_32fc_C1R : (ippiDFT_C_Func)ippiDFTFwd_CToC_32fc_C1R;
-                if (Dft_C_IPPLoop(src, dst, IPPDFT_C_Functor(ippiFunc),ipp_norm_flag))
-                    return;
-                setIppErrorStatus();
-            }
-            if (src.channels() == 1 && (inv || !(flags & DFT_COMPLEX_OUTPUT)))
-            {
-                ippiDFT_R_Func ippiFunc = inv ? (ippiDFT_R_Func)ippiDFTInv_PackToR_32f_C1R : (ippiDFT_R_Func)ippiDFTFwd_RToPack_32f_C1R;
-                if (Dft_R_IPPLoop(src, dst, IPPDFT_R_Functor(ippiFunc),ipp_norm_flag))
-                    return;
-                setIppErrorStatus();
+                if (src.channels() == 2 && !(inv && (flags & DFT_REAL_OUTPUT)))
+                {
+                    ippiDFT_C_Func ippiFunc = inv ? (ippiDFT_C_Func)ippiDFTInv_CToC_32fc_C1R : (ippiDFT_C_Func)ippiDFTFwd_CToC_32fc_C1R;
+                    if (Dft_C_IPPLoop(src, dst, IPPDFT_C_Functor(ippiFunc),ipp_norm_flag))
+                    {
+                        CV_IMPL_ADD(CV_IMPL_IPP|CV_IMPL_MT);
+                        return;
+                    }
+                    setIppErrorStatus();
+                }
+                if (src.channels() == 1 && (inv || !(flags & DFT_COMPLEX_OUTPUT)))
+                {
+                    ippiDFT_R_Func ippiFunc = inv ? (ippiDFT_R_Func)ippiDFTInv_PackToR_32f_C1R : (ippiDFT_R_Func)ippiDFTFwd_RToPack_32f_C1R;
+                    if (Dft_R_IPPLoop(src, dst, IPPDFT_R_Functor(ippiFunc),ipp_norm_flag))
+                    {
+                        CV_IMPL_ADD(CV_IMPL_IPP|CV_IMPL_MT);
+                        return;
+                    }
+                    setIppErrorStatus();
+                }
             }
         }
     }
@@ -2520,7 +2572,7 @@ void cv::dft( InputArray _src0, OutputArray _dst, int flags, int nonzero_rows )
 
         spec = 0;
 #ifdef USE_IPP_DFT
-        if( len*count >= 64 ) // use IPP DFT if available
+        if( CV_IPP_CHECK_COND && (len*count >= 64) ) // use IPP DFT if available
         {
             int specsize=0, initsize=0, worksize=0;
             IppDFTGetSizeFunc getSizeFunc = 0;
@@ -2661,8 +2713,8 @@ void cv::dft( InputArray _src0, OutputArray _dst, int flags, int nonzero_rows )
         {
             int a = 0, b = count;
             uchar *buf0, *buf1, *dbuf0, *dbuf1;
-            const uchar* sptr0 = src.data;
-            uchar* dptr0 = dst.data;
+            const uchar* sptr0 = src.ptr();
+            uchar* dptr0 = dst.ptr();
             buf0 = ptr;
             ptr += len*complex_elem_size;
             buf1 = ptr;
@@ -2911,9 +2963,9 @@ void cv::mulSpectrums( InputArray _srcA, InputArray _srcB,
 
     if( depth == CV_32F )
     {
-        const float* dataA = (const float*)srcA.data;
-        const float* dataB = (const float*)srcB.data;
-        float* dataC = (float*)dst.data;
+        const float* dataA = srcA.ptr<float>();
+        const float* dataB = srcB.ptr<float>();
+        float* dataC = dst.ptr<float>();
 
         size_t stepA = srcA.step/sizeof(dataA[0]);
         size_t stepB = srcB.step/sizeof(dataB[0]);
@@ -2978,9 +3030,9 @@ void cv::mulSpectrums( InputArray _srcA, InputArray _srcB,
     }
     else
     {
-        const double* dataA = (const double*)srcA.data;
-        const double* dataB = (const double*)srcB.data;
-        double* dataC = (double*)dst.data;
+        const double* dataA = srcA.ptr<double>();
+        const double* dataB = srcB.ptr<double>();
+        double* dataC = dst.ptr<double>();
 
         size_t stepA = srcA.step/sizeof(dataA[0]);
         size_t stepB = srcB.step/sizeof(dataB[0]);
@@ -3299,7 +3351,7 @@ public:
             pBuffer = (uchar*)buf;
 
             for( int i = range.start; i < range.end; ++i)
-                if(!(*ippidct)((float*)(src->data+i*src->step), (int)src->step,(float*)(dst->data+i*dst->step), (int)dst->step, pDCTSpec, (Ipp8u*)pBuffer))
+                if(!(*ippidct)(src->ptr<float>(i), (int)src->step,dst->ptr<float>(i), (int)dst->step, pDCTSpec, (Ipp8u*)pBuffer))
                     *ok = false;
         }
         else
@@ -3368,7 +3420,7 @@ static bool ippi_DCT_32f(const Mat& src, Mat& dst, bool inv, bool row)
             buf.allocate( bufSize );
             pBuffer = (uchar*)buf;
 
-            status = ippFunc((float*)src.data, (int)src.step, (float*)dst.data, (int)dst.step, pDCTSpec, (Ipp8u*)pBuffer);
+            status = ippFunc(src.ptr<float>(), (int)src.step, dst.ptr<float>(), (int)dst.step, pDCTSpec, (Ipp8u*)pBuffer);
         }
 
         if (pDCTSpec)
@@ -3414,12 +3466,18 @@ void cv::dct( InputArray _src0, OutputArray _dst, int flags )
     Mat dst = _dst.getMat();
 
 #if defined (HAVE_IPP) && (IPP_VERSION_MAJOR >= 7)
-    bool row = (flags & DCT_ROWS) != 0;
-    if (src.type() == CV_32F)
+    CV_IPP_CHECK()
     {
-        if(ippi_DCT_32f(src,dst,inv, row))
-            return;
-        setIppErrorStatus();
+        bool row = (flags & DCT_ROWS) != 0;
+        if (src.type() == CV_32F)
+        {
+            if(ippi_DCT_32f(src,dst,inv, row))
+            {
+                CV_IMPL_ADD(CV_IMPL_IPP);
+                return;
+            }
+            setIppErrorStatus();
+        }
     }
 #endif
 
@@ -3438,7 +3496,8 @@ void cv::dct( InputArray _src0, OutputArray _dst, int flags )
 
     for( ; stage <= end_stage; stage++ )
     {
-        uchar *sptr = src.data, *dptr = dst.data;
+        const uchar* sptr = src.ptr();
+        uchar* dptr = dst.ptr();
         size_t sstep0, sstep1, dstep0, dstep1;
 
         if( stage == 0 )

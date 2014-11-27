@@ -62,7 +62,7 @@ static void writeMatInBin( const Mat& mat, const string& filename )
         fwrite( (void*)&type, sizeof(int), 1, f );
         int dataSize = (int)(mat.step * mat.rows * mat.channels());
         fwrite( (void*)&dataSize, sizeof(int), 1, f );
-        fwrite( (void*)mat.data, 1, dataSize, f );
+        fwrite( (void*)mat.ptr(), 1, dataSize, f );
         fclose(f);
     }
 }
@@ -106,8 +106,6 @@ public:
 
     ~CV_DescriptorExtractorTest()
     {
-        if(!detector.empty())
-            detector.release();
     }
 protected:
     virtual void createDescriptorExtractor() {}
@@ -257,8 +255,8 @@ protected:
             fs.open( string(ts->get_data_path()) + FEATURES2D_DIR + "/keypoints.xml.gz", FileStorage::WRITE );
             if( fs.isOpened() )
             {
-                ORB fd;
-                fd.detect(img, keypoints);
+                Ptr<ORB> fd = ORB::create();
+                fd->detect(img, keypoints);
                 write( fs, "keypoints", keypoints );
             }
             else
@@ -314,31 +312,34 @@ private:
 
 TEST( Features2d_DescriptorExtractor_BRISK, regression )
 {
-    CV_DescriptorExtractorTest<Hamming> test( "descriptor-brisk",  (CV_DescriptorExtractorTest<Hamming>::DistanceType)2.f,
-                                                 DescriptorExtractor::create("BRISK") );
+    CV_DescriptorExtractorTest<Hamming> test( "descriptor-brisk",
+                                             (CV_DescriptorExtractorTest<Hamming>::DistanceType)2.f,
+                                            BRISK::create() );
     test.safe_run();
 }
 
 TEST( Features2d_DescriptorExtractor_ORB, regression )
 {
     // TODO adjust the parameters below
-    CV_DescriptorExtractorTest<Hamming> test( "descriptor-orb",  (CV_DescriptorExtractorTest<Hamming>::DistanceType)12.f,
-                                                 DescriptorExtractor::create("ORB") );
+    CV_DescriptorExtractorTest<Hamming> test( "descriptor-orb",
+                                              (CV_DescriptorExtractorTest<Hamming>::DistanceType)12.f,
+                                             ORB::create() );
     test.safe_run();
 }
 
 TEST( Features2d_DescriptorExtractor_KAZE, regression )
 {
     CV_DescriptorExtractorTest< L2<float> > test( "descriptor-kaze",  0.03f,
-                                                 DescriptorExtractor::create("KAZE"),
-                                                 L2<float>(), FeatureDetector::create("KAZE"));
+                                                 KAZE::create(),
+                                                 L2<float>(), KAZE::create() );
     test.safe_run();
 }
 
 TEST( Features2d_DescriptorExtractor_AKAZE, regression )
 {
-    CV_DescriptorExtractorTest<Hamming> test( "descriptor-akaze",  (CV_DescriptorExtractorTest<Hamming>::DistanceType)12.f,
-                                              DescriptorExtractor::create("AKAZE"),
-                                              Hamming(), FeatureDetector::create("AKAZE"));
+    CV_DescriptorExtractorTest<Hamming> test( "descriptor-akaze",
+                                              (CV_DescriptorExtractorTest<Hamming>::DistanceType)12.f,
+                                              AKAZE::create(),
+                                              Hamming(), AKAZE::create());
     test.safe_run();
 }
