@@ -666,7 +666,7 @@ findStereoCorrespondenceBM( const Mat& left, const Mat& right,
                 int thresh = minsad + (minsad * uniquenessRatio/100);
                 for( d = 0; d < ndisp; d++ )
                 {
-                    if( sad[d] <= thresh && (d < mind-1 || d > mind+1))
+                    if( (d < mind-1 || d > mind+1) && sad[d] <= thresh)
                         break;
                 }
                 if( d < ndisp )
@@ -1009,8 +1009,6 @@ public:
         if (disp0.data != disp.data)
             disp.convertTo(disp0, disp0.type(), 1./(1 << DISPARITY_SHIFT), 0);
     }
-
-    AlgorithmInfo* info() const { return 0; }
 
     int getMinDisparity() const { return params.minDisparity; }
     void setMinDisparity(int minDisparity) { params.minDisparity = minDisparity; }

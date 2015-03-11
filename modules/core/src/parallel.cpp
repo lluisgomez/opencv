@@ -56,7 +56,7 @@
     #include <sys/types.h>
     #if defined ANDROID
         #include <sys/sysconf.h>
-    #else
+    #elif defined __APPLE__
         #include <sys/sysctl.h>
     #endif
 #endif
@@ -69,7 +69,7 @@
     #define HAVE_GCD
 #endif
 
-#if defined _MSC_VER && _MSC_VER >= 1600
+#if defined _MSC_VER && _MSC_VER >= 1600 && !defined(WINRT)
     #define HAVE_CONCURRENCY
 #endif
 
@@ -458,7 +458,7 @@ int cv::getNumberOfCPUs(void)
 {
 #if defined WIN32 || defined _WIN32
     SYSTEM_INFO sysinfo;
-#if defined(_M_ARM) || defined(_M_X64) || defined(HAVE_WINRT)
+#if defined(_M_ARM) || defined(_M_X64) || defined(WINRT)
     GetNativeSystemInfo( &sysinfo );
 #else
     GetSystemInfo( &sysinfo );

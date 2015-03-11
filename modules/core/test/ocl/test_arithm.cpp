@@ -331,7 +331,11 @@ OCL_TEST_P(Mul, Mat_Scale)
         OCL_OFF(cv::multiply(src1_roi, src2_roi, dst1_roi, val[0]));
         OCL_ON(cv::multiply(usrc1_roi, usrc2_roi, udst1_roi, val[0]));
 
+#ifdef ANDROID
+        Near(udst1_roi.depth() >= CV_32F ? 2e-1 : 1);
+#else
         Near(udst1_roi.depth() >= CV_32F ? 1e-3 : 1);
+#endif
     }
 }
 
@@ -1577,7 +1581,7 @@ PARAM_TEST_CASE(ConvertScaleAbs, MatDepth, Channels, bool)
 
         Size roiSize = randomSize(1, MAX_VALUE);
         Border srcBorder = randomBorder(0, use_roi ? MAX_VALUE : 0);
-        randomSubMat(src, src_roi, roiSize, srcBorder, stype, 2, 11); // FIXIT: Test with minV, maxV
+        randomSubMat(src, src_roi, roiSize, srcBorder, stype, -11, 11); // FIXIT: Test with minV, maxV
 
         Border dstBorder = randomBorder(0, use_roi ? MAX_VALUE : 0);
         randomSubMat(dst, dst_roi, roiSize, dstBorder, dtype, 5, 16);

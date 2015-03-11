@@ -12,19 +12,22 @@
 //    Erping Pang, erping@multicorewareinc.com
 //
 
-
+#ifdef HAAR
 typedef struct __attribute__((aligned(4))) OptHaarFeature
 {
     int4 ofs[3] __attribute__((aligned (4)));
     float4 weight __attribute__((aligned (4)));
 }
 OptHaarFeature;
+#endif
 
+#ifdef LBP
 typedef struct __attribute__((aligned(4))) OptLBPFeature
 {
     int16 ofs __attribute__((aligned (4)));
 }
 OptLBPFeature;
+#endif
 
 typedef struct __attribute__((aligned(4))) Stump
 {
@@ -64,20 +67,19 @@ ScaleData;
 #define NODE_COUNT 1
 #endif
 
+#ifdef HAAR
 __kernel __attribute__((reqd_work_group_size(LOCAL_SIZE_X,LOCAL_SIZE_Y,1)))
 void runHaarClassifier(
     int nscales, __global const ScaleData* scaleData,
     __global const int* sum,
     int _sumstep, int sumoffset,
     __global const OptHaarFeature* optfeatures,
-
-    int splitstage, int nstages,
     __global const Stage* stages,
     __global const Node* nodes,
     __global const float* leaves0,
 
     volatile __global int* facepos,
-    int4 normrect, int sqofs, int2 windowsize, int maxFaces)
+    int4 normrect, int sqofs, int2 windowsize)
 {
     int lx = get_local_id(0);
     int ly = get_local_id(1);
@@ -138,7 +140,6 @@ void runHaarClassifier(
                 int dy = i/SUM_BUF_STEP, dx = i - dy*SUM_BUF_STEP;
                 vstore4(vload4(0, psum0 + mad24(dy, sumstep, dx)), 0, ibuf+i);
             }
-            barrier(CLK_LOCAL_MEM_FENCE);
             #endif
 
             if( lidx == 0 )
@@ -165,7 +166,7 @@ void runHaarClassifier(
                 float nf = (float)normarea * sqrt(max(sqval - sval * sval, 0.f));
                 nf = nf > 0 ? nf : 1.f;
 
-                for( stageIdx = 0; stageIdx < splitstage; stageIdx++ )
+                for( stageIdx = 0; stageIdx < SPLIT_STAGE; stageIdx++ )
                 {
                     int ntrees = stages[stageIdx].ntrees;
                     float s = 0.f;
@@ -221,7 +222,7 @@ void runHaarClassifier(
                         break;
                 }
 
-                if( stageIdx == splitstage && (ystep == 1 || ((ix | iy) & 1) == 0) )
+                if( stageIdx == SPLIT_STAGE && (ystep == 1 || ((ix | iy) & 1) == 0) )
                 {
                     int count = atomic_inc(lcount);
                     lbuf[count] = (int)(ix | (iy << 8));
@@ -229,13 +230,14 @@ void runHaarClassifier(
                 }
             }
 
-            for( stageIdx = splitstage; stageIdx < nstages; stageIdx++ )
+            for( stageIdx = SPLIT_STAGE; stageIdx < N_STAGES; stageIdx++ )
             {
+                barrier(CLK_LOCAL_MEM_FENCE);
                 int nrects = lcount[0];
 
-                barrier(CLK_LOCAL_MEM_FENCE);
                 if( nrects == 0 )
                     break;
+                barrier(CLK_LOCAL_MEM_FENCE);
                 if( lidx == 0 )
                     lcount[0] = 0;
 
@@ -335,13 +337,13 @@ void runHaarClassifier(
             }
 
             barrier(CLK_LOCAL_MEM_FENCE);
-            if( stageIdx == nstages )
+            if( stageIdx == N_STAGES )
             {
                 int nrects = lcount[0];
                 if( lidx < nrects )
                 {
                     int nfaces = atomic_inc(facepos);
-                    if( nfaces < maxFaces )
+                    if( nfaces < MAX_FACES )
                     {
                         volatile __global int* face = facepos + 1 + nfaces*3;
                         int val = lbuf[lidx];
@@ -354,7 +356,9 @@ void runHaarClassifier(
         }
     }
 }
+#endif
 
+#ifdef LBP
 #undef CALC_SUM_OFS_
 #define CALC_SUM_OFS_(p0, p1, p2, p3, ptr) \
     ((ptr)[p0] - (ptr)[p1] - (ptr)[p2] + (ptr)[p3])
@@ -364,15 +368,13 @@ __kernel void runLBPClassifierStumpSimple(
     __global const int* sum,
     int _sumstep, int sumoffset,
     __global const OptLBPFeature* optfeatures,
-
-    int splitstage, int nstages,
     __global const Stage* stages,
     __global const Stump* stumps,
     __global const int* bitsets,
     int bitsetSize,
 
     volatile __global int* facepos,
-    int2 windowsize, int maxFaces)
+    int2 windowsize)
 {
     int lx = get_local_id(0);
     int ly = get_local_id(1);
@@ -381,7 +383,6 @@ __kernel void runLBPClassifierStumpSimple(
     int groupIdx = get_group_id(1)*get_num_groups(0) + get_group_id(0);
     int ngroups = get_num_groups(0)*get_num_groups(1);
     int scaleIdx, tileIdx, stageIdx;
-    int startStage = 0, endStage = nstages;
     int sumstep = (int)(_sumstep/sizeof(int));
 
     for( scaleIdx = nscales-1; scaleIdx >= 0; scaleIdx-- )
@@ -395,8 +396,8 @@ __kernel void runLBPClassifierStumpSimple(
 
         for( tileIdx = groupIdx; tileIdx < totalTiles; tileIdx += ngroups )
         {
-            int iy = ((tileIdx / ntiles.x)*local_size_y + ly)*ystep;
-            int ix = ((tileIdx % ntiles.x)*local_size_x + lx)*ystep;
+            int iy = mad24((tileIdx / ntiles.x), local_size_y, ly) * ystep;
+            int ix = mad24((tileIdx % ntiles.x), local_size_x, lx) * ystep;
 
             if( ix < worksize.x && iy < worksize.y )
             {
@@ -404,7 +405,7 @@ __kernel void runLBPClassifierStumpSimple(
                 __global const Stump* stump = stumps;
                 __global const int* bitset = bitsets;
 
-                for( stageIdx = 0; stageIdx < endStage; stageIdx++ )
+                for( stageIdx = 0; stageIdx < N_STAGES; stageIdx++ )
                 {
                     int i, ntrees = stages[stageIdx].ntrees;
                     float s = 0.f;
@@ -433,10 +434,10 @@ __kernel void runLBPClassifierStumpSimple(
                         break;
                 }
 
-                if( stageIdx == nstages )
+                if( stageIdx == N_STAGES )
                 {
                     int nfaces = atomic_inc(facepos);
-                    if( nfaces < maxFaces )
+                    if( nfaces < MAX_FACES )
                     {
                         volatile __global int* face = facepos + 1 + nfaces*3;
                         face[0] = scaleIdx;
@@ -455,15 +456,13 @@ void runLBPClassifierStump(
     __global const int* sum,
     int _sumstep, int sumoffset,
     __global const OptLBPFeature* optfeatures,
-
-    int splitstage, int nstages,
     __global const Stage* stages,
     __global const Stump* stumps,
     __global const int* bitsets,
     int bitsetSize,
 
     volatile __global int* facepos,
-    int2 windowsize, int maxFaces)
+    int2 windowsize)
 {
     int lx = get_local_id(0);
     int ly = get_local_id(1);
@@ -525,7 +524,7 @@ void runLBPClassifierStump(
                 __global const int* p = psum0 + mad24(iy, sumstep, ix);
                 #endif
 
-                for( stageIdx = 0; stageIdx < splitstage; stageIdx++ )
+                for( stageIdx = 0; stageIdx < SPLIT_STAGE; stageIdx++ )
                 {
                     int ntrees = stages[stageIdx].ntrees;
                     float s = 0.f;
@@ -554,14 +553,14 @@ void runLBPClassifierStump(
                         break;
                 }
 
-                if( stageIdx == splitstage && (ystep == 1 || ((ix | iy) & 1) == 0) )
+                if( stageIdx == SPLIT_STAGE && (ystep == 1 || ((ix | iy) & 1) == 0) )
                 {
                     int count = atomic_inc(lcount);
                     lbuf[count] = (int)(ix | (iy << 8));
                 }
             }
 
-            for( stageIdx = splitstage; stageIdx < nstages; stageIdx++ )
+            for( stageIdx = SPLIT_STAGE; stageIdx < N_STAGES; stageIdx++ )
             {
                 int nrects = lcount[0];
 
@@ -639,13 +638,13 @@ void runLBPClassifierStump(
             }
 
             barrier(CLK_LOCAL_MEM_FENCE);
-            if( stageIdx == nstages )
+            if( stageIdx == N_STAGES )
             {
                 int nrects = lcount[0];
                 if( lidx < nrects )
                 {
                     int nfaces = atomic_inc(facepos);
-                    if( nfaces < maxFaces )
+                    if( nfaces < MAX_FACES )
                     {
                         volatile __global int* face = facepos + 1 + nfaces*3;
                         int val = lbuf[lidx];
@@ -658,3 +657,4 @@ void runLBPClassifierStump(
         }
     }
 }
+#endif

@@ -160,8 +160,8 @@ public:
         STD_VECTOR_MAT    = 5 << KIND_SHIFT,
         EXPR              = 6 << KIND_SHIFT,
         OPENGL_BUFFER     = 7 << KIND_SHIFT,
-        CUDA_MEM          = 8 << KIND_SHIFT,
-        GPU_MAT           = 9 << KIND_SHIFT,
+        CUDA_HOST_MEM     = 8 << KIND_SHIFT,
+        CUDA_GPU_MAT      = 9 << KIND_SHIFT,
         UMAT              =10 << KIND_SHIFT,
         STD_VECTOR_UMAT   =11 << KIND_SHIFT
     };
@@ -180,7 +180,7 @@ public:
     _InputArray(const double& val);
     _InputArray(const cuda::GpuMat& d_mat);
     _InputArray(const ogl::Buffer& buf);
-    _InputArray(const cuda::CudaMem& cuda_mem);
+    _InputArray(const cuda::HostMem& cuda_mem);
     template<typename _Tp> _InputArray(const cudev::GpuMat_<_Tp>& m);
     _InputArray(const UMat& um);
     _InputArray(const std::vector<UMat>& umv);
@@ -277,7 +277,7 @@ public:
     _OutputArray(std::vector<Mat>& vec);
     _OutputArray(cuda::GpuMat& d_mat);
     _OutputArray(ogl::Buffer& buf);
-    _OutputArray(cuda::CudaMem& cuda_mem);
+    _OutputArray(cuda::HostMem& cuda_mem);
     template<typename _Tp> _OutputArray(cudev::GpuMat_<_Tp>& m);
     template<typename _Tp> _OutputArray(std::vector<_Tp>& vec);
     template<typename _Tp> _OutputArray(std::vector<std::vector<_Tp> >& vec);
@@ -292,7 +292,7 @@ public:
     _OutputArray(const std::vector<Mat>& vec);
     _OutputArray(const cuda::GpuMat& d_mat);
     _OutputArray(const ogl::Buffer& buf);
-    _OutputArray(const cuda::CudaMem& cuda_mem);
+    _OutputArray(const cuda::HostMem& cuda_mem);
     template<typename _Tp> _OutputArray(const cudev::GpuMat_<_Tp>& m);
     template<typename _Tp> _OutputArray(const std::vector<_Tp>& vec);
     template<typename _Tp> _OutputArray(const std::vector<std::vector<_Tp> >& vec);
@@ -310,7 +310,7 @@ public:
     virtual UMat& getUMatRef(int i=-1) const;
     virtual cuda::GpuMat& getGpuMatRef() const;
     virtual ogl::Buffer& getOGlBufferRef() const;
-    virtual cuda::CudaMem& getCudaMemRef() const;
+    virtual cuda::HostMem& getHostMemRef() const;
     virtual void create(Size sz, int type, int i=-1, bool allowTransposed=false, int fixedDepthMask=0) const;
     virtual void create(int rows, int cols, int type, int i=-1, bool allowTransposed=false, int fixedDepthMask=0) const;
     virtual void create(int dims, const int* size, int type, int i=-1, bool allowTransposed=false, int fixedDepthMask=0) const;
@@ -333,7 +333,7 @@ public:
     _InputOutputArray(std::vector<Mat>& vec);
     _InputOutputArray(cuda::GpuMat& d_mat);
     _InputOutputArray(ogl::Buffer& buf);
-    _InputOutputArray(cuda::CudaMem& cuda_mem);
+    _InputOutputArray(cuda::HostMem& cuda_mem);
     template<typename _Tp> _InputOutputArray(cudev::GpuMat_<_Tp>& m);
     template<typename _Tp> _InputOutputArray(std::vector<_Tp>& vec);
     template<typename _Tp> _InputOutputArray(std::vector<std::vector<_Tp> >& vec);
@@ -348,7 +348,7 @@ public:
     _InputOutputArray(const std::vector<Mat>& vec);
     _InputOutputArray(const cuda::GpuMat& d_mat);
     _InputOutputArray(const ogl::Buffer& buf);
-    _InputOutputArray(const cuda::CudaMem& cuda_mem);
+    _InputOutputArray(const cuda::HostMem& cuda_mem);
     template<typename _Tp> _InputOutputArray(const cudev::GpuMat_<_Tp>& m);
     template<typename _Tp> _InputOutputArray(const std::vector<_Tp>& vec);
     template<typename _Tp> _InputOutputArray(const std::vector<std::vector<_Tp> >& vec);
@@ -376,9 +376,10 @@ enum UMatUsageFlags
 {
     USAGE_DEFAULT = 0,
 
-    // default allocation policy is platform and usage specific
+    // buffer allocation policy is platform and usage specific
     USAGE_ALLOCATE_HOST_MEMORY = 1 << 0,
     USAGE_ALLOCATE_DEVICE_MEMORY = 1 << 1,
+    USAGE_ALLOCATE_SHARED_MEMORY = 1 << 2, // It is not equal to: USAGE_ALLOCATE_HOST_MEMORY | USAGE_ALLOCATE_DEVICE_MEMORY
 
     __UMAT_USAGE_FLAGS_32BIT = 0x7fffffff // Binary compatibility hint
 };
@@ -414,7 +415,7 @@ public:
                       const size_t dstofs[], const size_t dststep[], bool sync) const;
 
     // default implementation returns DummyBufferPoolController
-    virtual BufferPoolController* getBufferPoolController() const;
+    virtual BufferPoolController* getBufferPoolController(const char* id = NULL) const;
 };
 
 
@@ -480,7 +481,7 @@ struct CV_EXPORTS UMatData
     int refcount;
     uchar* data;
     uchar* origdata;
-    size_t size, capacity;
+    size_t size;
 
     int flags;
     void* handle;
@@ -634,18 +635,10 @@ sub-matrices.
         Mat M = Mat(3, 3, CV_64F, m).inv();
     @endcode
     .
-Partial yet very common cases of this *user-allocated data* case are conversions from CvMat and
-IplImage to Mat. For this purpose, there are special constructors taking pointers to CvMat or
-IplImage and the optional flag indicating whether to copy the data or not. Backward conversion from
-Mat to CvMat or IplImage is provided via cast operators Mat::operator CvMat() const and
-Mat::operator IplImage(). The operators do NOT copy the data.
-@code
-    IplImage* img = cvLoadImage("greatwave.jpg", 1);
-    Mat mtx(img); // convert IplImage* -> Mat
-    CvMat oldmat = mtx; // convert Mat -> CvMat
-    CV_Assert(oldmat.cols == img->width && oldmat.rows == img->height &&
-        oldmat.data.ptr == (uchar*)img->imageData && oldmat.step == img->widthStep);
-@endcode
+    Partial yet very common cases of this *user-allocated data* case are conversions from CvMat and
+    IplImage to Mat. For this purpose, there is function cv::cvarrToMat taking pointers to CvMat or
+    IplImage and the optional flag indicating whether to copy the data or not.
+    @snippet samples/cpp/image.cpp iplimage
 
 - Use MATLAB-style array initializers, zeros(), ones(), eye(), for example:
 @code

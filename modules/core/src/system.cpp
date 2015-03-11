@@ -12,6 +12,7 @@
 //
 // Copyright (C) 2000-2008, Intel Corporation, all rights reserved.
 // Copyright (C) 2009, Willow Garage Inc., all rights reserved.
+// Copyright (C) 2015, Itseez Inc., all rights reserved.
 // Third party copyrights are property of their respective owners.
 //
 // Redistribution and use in source and binary forms, with or without modification,
@@ -48,6 +49,13 @@
 # endif
 #endif
 
+#if defined ANDROID || defined __linux__
+#  include <unistd.h>
+#  include <fcntl.h>
+#  include <elf.h>
+#  include <linux/auxvec.h>
+#endif
+
 #if defined WIN32 || defined _WIN32 || defined WINCE
 #ifndef _WIN32_WINNT           // This is needed for the declaration of TryEnterCriticalSection in winbase.h with Visual Studio 2005 (and older?)
   #define _WIN32_WINNT 0x0400  // http://msdn.microsoft.com/en-us/library/ms686857(VS.85).aspx
@@ -82,10 +90,26 @@
             pop ebx
         }
     }
+    static void __cpuidex(int* cpuid_data, int, int)
+    {
+        __asm
+        {
+            push edi
+            mov edi, cpuid_data
+            mov eax, 7
+            mov ecx, 0
+            cpuid
+            mov [edi], eax
+            mov [edi + 4], ebx
+            mov [edi + 8], ecx
+            mov [edi + 12], edx
+            pop edi
+        }
+    }
   #endif
 #endif
 
-#ifdef HAVE_WINRT
+#ifdef WINRT
 #include <wrl/client.h>
 #ifndef __cplusplus_winrt
 #include <windows.storage.h>
@@ -135,7 +159,7 @@ std::wstring GetTempFileNameWinRT(std::wstring prefix)
              UINT(g.Data4[2]), UINT(g.Data4[3]), UINT(g.Data4[4]),
              UINT(g.Data4[5]), UINT(g.Data4[6]), UINT(g.Data4[7]));
 
-    return prefix + std::wstring(guidStr);
+    return prefix.append(std::wstring(guidStr));
 }
 
 #endif
@@ -163,8 +187,6 @@ std::wstring GetTempFileNameWinRT(std::wstring prefix)
 #include <sys/types.h>
 #if defined ANDROID
 #include <sys/sysconf.h>
-#else
-#include <sys/sysctl.h>
 #endif
 #endif
 
@@ -203,7 +225,7 @@ struct HWFeatures
     enum { MAX_FEATURE = CV_HARDWARE_MAX_FEATURE };
 
     HWFeatures(void)
-     {
+    {
         memset( have, 0, sizeof(have) );
         x86_family = 0;
     }
@@ -247,11 +269,81 @@ struct HWFeatures
             f.have[CV_CPU_SSE2]   = (cpuid_data[3] & (1<<26)) != 0;
             f.have[CV_CPU_SSE3]   = (cpuid_data[2] & (1<<0)) != 0;
             f.have[CV_CPU_SSSE3]  = (cpuid_data[2] & (1<<9)) != 0;
+            f.have[CV_CPU_FMA3]  = (cpuid_data[2] & (1<<12)) != 0;
             f.have[CV_CPU_SSE4_1] = (cpuid_data[2] & (1<<19)) != 0;
             f.have[CV_CPU_SSE4_2] = (cpuid_data[2] & (1<<20)) != 0;
             f.have[CV_CPU_POPCNT] = (cpuid_data[2] & (1<<23)) != 0;
             f.have[CV_CPU_AVX]    = (((cpuid_data[2] & (1<<28)) != 0)&&((cpuid_data[2] & (1<<27)) != 0));//OS uses XSAVE_XRSTORE and CPU support AVX
+
+            // make the second call to the cpuid command in order to get
+            // information about extended features like AVX2
+        #if defined _MSC_VER && (defined _M_IX86 || defined _M_X64)
+            __cpuidex(cpuid_data, 7, 0);
+        #elif defined __GNUC__ && (defined __i386__ || defined __x86_64__)
+            #ifdef __x86_64__
+            asm __volatile__
+            (
+             "movl $7, %%eax\n\t"
+             "movl $0, %%ecx\n\t"
+             "cpuid\n\t"
+             :[eax]"=a"(cpuid_data[0]),[ebx]"=b"(cpuid_data[1]),[ecx]"=c"(cpuid_data[2]),[edx]"=d"(cpuid_data[3])
+             :
+             : "cc"
+            );
+            #else
+            asm volatile
+            (
+             "pushl %%ebx\n\t"
+             "movl $7,%%eax\n\t"
+             "movl $0,%%ecx\n\t"
+             "cpuid\n\t"
+             "movl %%ebx, %0\n\t"
+             "popl %%ebx\n\t"
+             : "=r"(cpuid_data[1]), "=c"(cpuid_data[2])
+             :
+             : "cc"
+            );
+            #endif
+        #endif
+            f.have[CV_CPU_AVX2]   = (cpuid_data[1] & (1<<5)) != 0;
+
+            f.have[CV_CPU_AVX_512F]       = (cpuid_data[1] & (1<<16)) != 0;
+            f.have[CV_CPU_AVX_512DQ]      = (cpuid_data[1] & (1<<17)) != 0;
+            f.have[CV_CPU_AVX_512IFMA512] = (cpuid_data[1] & (1<<21)) != 0;
+            f.have[CV_CPU_AVX_512PF]      = (cpuid_data[1] & (1<<26)) != 0;
+            f.have[CV_CPU_AVX_512ER]      = (cpuid_data[1] & (1<<27)) != 0;
+            f.have[CV_CPU_AVX_512CD]      = (cpuid_data[1] & (1<<28)) != 0;
+            f.have[CV_CPU_AVX_512BW]      = (cpuid_data[1] & (1<<30)) != 0;
+            f.have[CV_CPU_AVX_512VL]      = (cpuid_data[1] & (1<<31)) != 0;
+            f.have[CV_CPU_AVX_512VBMI]    = (cpuid_data[2] &  (1<<1)) != 0;
         }
+
+    #if defined ANDROID || defined __linux__
+    #ifdef __aarch64__
+        f.have[CV_CPU_NEON] = true;
+    #else
+        int cpufile = open("/proc/self/auxv", O_RDONLY);
+
+        if (cpufile >= 0)
+        {
+            Elf32_auxv_t auxv;
+            const size_t size_auxv_t = sizeof(auxv);
+
+            while ((size_t)read(cpufile, &auxv, size_auxv_t) == size_auxv_t)
+            {
+                if (auxv.a_type == AT_HWCAP)
+                {
+                    f.have[CV_CPU_NEON] = (auxv.a_un.a_val & 4096) != 0;
+                    break;
+                }
+            }
+
+            close(cpufile);
+        }
+    #endif
+    #elif (defined __clang__ || defined __APPLE__) && (defined __ARM_NEON__ || (defined __ARM_NEON && defined __aarch64__))
+        f.have[CV_CPU_NEON] = true;
+    #endif
 
         return f;
     }
@@ -290,12 +382,19 @@ IPPInitializer ippInitializer;
 volatile bool USE_SSE2 = featuresEnabled.have[CV_CPU_SSE2];
 volatile bool USE_SSE4_2 = featuresEnabled.have[CV_CPU_SSE4_2];
 volatile bool USE_AVX = featuresEnabled.have[CV_CPU_AVX];
+volatile bool USE_AVX2 = featuresEnabled.have[CV_CPU_AVX2];
 
 void setUseOptimized( bool flag )
 {
     useOptimizedFlag = flag;
     currentFeatures = flag ? &featuresEnabled : &featuresDisabled;
     USE_SSE2 = currentFeatures->have[CV_CPU_SSE2];
+
+    ipp::setUseIPP(flag);
+    ocl::setUseOpenCL(flag);
+#ifdef HAVE_TEGRA_OPTIMIZATION
+    ::tegra::setUseTegra(flag);
+#endif
 }
 
 bool useOptimized(void)
@@ -443,24 +542,20 @@ String format( const char* fmt, ... )
 String tempfile( const char* suffix )
 {
     String fname;
-#ifndef HAVE_WINRT
+#ifndef WINRT
     const char *temp_dir = getenv("OPENCV_TEMP_PATH");
 #endif
 
 #if defined WIN32 || defined _WIN32
-#ifdef HAVE_WINRT
+#ifdef WINRT
     RoInitialize(RO_INIT_MULTITHREADED);
-    std::wstring temp_dir = L"";
-    const wchar_t* opencv_temp_dir = GetTempPathWinRT().c_str();
-    if (opencv_temp_dir)
-        temp_dir = std::wstring(opencv_temp_dir);
+    std::wstring temp_dir = GetTempPathWinRT();
 
-    std::wstring temp_file;
-    temp_file = GetTempFileNameWinRT(L"ocv");
+    std::wstring temp_file = GetTempFileNameWinRT(L"ocv");
     if (temp_file.empty())
         return String();
 
-    temp_file = temp_dir + std::wstring(L"\\") + temp_file;
+    temp_file = temp_dir.append(std::wstring(L"\\")).append(temp_file);
     DeleteFileW(temp_file.c_str());
 
     char aname[MAX_PATH];
@@ -856,7 +951,7 @@ public:
 #pragma warning(disable:4505) // unreferenced local function has been removed
 #endif
 
-#ifdef HAVE_WINRT
+#ifdef WINRT
     // using C++11 thread attribute for local thread data
     static __declspec( thread ) TLSStorage* g_tlsdata = NULL;
 
@@ -907,10 +1002,10 @@ public:
         }
         return d;
     }
-#endif //HAVE_WINRT
+#endif //WINRT
 
 #if defined CVAPI_EXPORTS && defined WIN32 && !defined WINCE
-#ifdef HAVE_WINRT
+#ifdef WINRT
     #pragma warning(disable:4447) // Disable warning 'main' signature found without threading model
 #endif
 
@@ -1057,12 +1152,20 @@ TLSStorage::~TLSStorage()
     tlsData_.clear();
 }
 
-TLSData<CoreTLSData> coreTlsData;
+
+
+TLSData<CoreTLSData>& getCoreTlsData()
+{
+    static TLSData<CoreTLSData> *value = new TLSData<CoreTLSData>();
+    return *value;
+}
+
+
 
 #ifdef CV_COLLECT_IMPL_DATA
 void setImpl(int flags)
 {
-    CoreTLSData* data = coreTlsData.get();
+    CoreTLSData* data = getCoreTlsData().get();
     data->implFlags = flags;
     data->implCode.clear();
     data->implFun.clear();
@@ -1070,7 +1173,7 @@ void setImpl(int flags)
 
 void addImpl(int flag, const char* func)
 {
-    CoreTLSData* data = coreTlsData.get();
+    CoreTLSData* data = getCoreTlsData().get();
     data->implFlags |= flag;
     if(func) // use lazy collection if name was not specified
     {
@@ -1085,7 +1188,7 @@ void addImpl(int flag, const char* func)
 
 int getImpl(std::vector<int> &impl, std::vector<String> &funName)
 {
-    CoreTLSData* data = coreTlsData.get();
+    CoreTLSData* data = getCoreTlsData().get();
     impl = data->implCode;
     funName = data->implFun;
     return data->implFlags; // return actual flags for lazy collection
@@ -1093,13 +1196,13 @@ int getImpl(std::vector<int> &impl, std::vector<String> &funName)
 
 bool useCollection()
 {
-    CoreTLSData* data = coreTlsData.get();
+    CoreTLSData* data = getCoreTlsData().get();
     return data->useCollection;
 }
 
 void setUseCollection(bool flag)
 {
-    CoreTLSData* data = coreTlsData.get();
+    CoreTLSData* data = getCoreTlsData().get();
     data->useCollection = flag;
 }
 #endif
@@ -1132,7 +1235,7 @@ String getIppErrorLocation()
 bool useIPP()
 {
 #ifdef HAVE_IPP
-    CoreTLSData* data = coreTlsData.get();
+    CoreTLSData* data = getCoreTlsData().get();
     if(data->useIPP < 0)
     {
         const char* pIppEnv = getenv("OPENCV_IPP");
@@ -1149,7 +1252,7 @@ bool useIPP()
 
 void setUseIPP(bool flag)
 {
-    CoreTLSData* data = coreTlsData.get();
+    CoreTLSData* data = getCoreTlsData().get();
 #ifdef HAVE_IPP
     data->useIPP = flag;
 #else
@@ -1161,5 +1264,35 @@ void setUseIPP(bool flag)
 } // namespace ipp
 
 } // namespace cv
+
+#ifdef HAVE_TEGRA_OPTIMIZATION
+
+namespace tegra {
+
+bool useTegra()
+{
+    cv::CoreTLSData* data = cv::getCoreTlsData().get();
+
+    if (data->useTegra < 0)
+    {
+        const char* pTegraEnv = getenv("OPENCV_TEGRA");
+        if (pTegraEnv && (cv::String(pTegraEnv) == "disabled"))
+            data->useTegra = false;
+        else
+            data->useTegra = true;
+    }
+
+    return (data->useTegra > 0);
+}
+
+void setUseTegra(bool flag)
+{
+    cv::CoreTLSData* data = cv::getCoreTlsData().get();
+    data->useTegra = flag;
+}
+
+} // namespace tegra
+
+#endif
 
 /* End of file. */

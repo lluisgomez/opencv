@@ -75,10 +75,10 @@ function(find_python preferred_version min_version library_env include_dir_env
 
     if(NOT ANDROID AND NOT IOS)
       ocv_check_environment_variables(${library_env} ${include_dir_env})
-      if(${library})
+      if(${${library_env}})
           set(PYTHON_LIBRARY "${${library_env}}")
       endif()
-      if(${include_dir})
+      if(${${include_dir_env}})
           set(PYTHON_INCLUDE_DIR "${${include_dir_env}}")
       endif()
 
@@ -237,21 +237,3 @@ if(PYTHON2INTERP_FOUND)
     set(PYTHON_DEFAULT_AVAILABLE "TRUE")
     set(PYTHON_DEFAULT_EXECUTABLE "${PYTHON2_EXECUTABLE}")
 endif()
-
-unset(HAVE_SPHINX CACHE)
-
-if(BUILD_DOCS)
-  find_host_program(SPHINX_BUILD sphinx-build)
-  find_host_program(PLANTUML plantuml)
-  if(SPHINX_BUILD)
-      execute_process(COMMAND "${SPHINX_BUILD}"
-                      OUTPUT_QUIET
-                      ERROR_VARIABLE SPHINX_OUTPUT
-                      OUTPUT_STRIP_TRAILING_WHITESPACE)
-      if(SPHINX_OUTPUT MATCHES "Sphinx v([0-9][^ \n]*)")
-        set(SPHINX_VERSION "${CMAKE_MATCH_1}")
-        set(HAVE_SPHINX 1)
-        message(STATUS "Found Sphinx ${SPHINX_VERSION}: ${SPHINX_BUILD}")
-      endif()
-  endif()
-endif(BUILD_DOCS)
