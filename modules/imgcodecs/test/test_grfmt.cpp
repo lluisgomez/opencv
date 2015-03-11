@@ -147,10 +147,13 @@ public:
                     CV_Assert(img.size() == img_test.size());
                     CV_Assert(img.type() == img_test.type());
 
-                    double n = cvtest::norm(img, img_test, NORM_L2);
-                    if ( n > 1.0)
+                    // JPEG format does not provide 100% accuracy
+                    // using fuzzy image comparison
+                    double n = cvtest::norm(img, img_test, NORM_L1);
+                    double expected = 0.05 * img.size().area();
+                    if ( n > expected)
                     {
-                        ts->printf(ts->LOG, "norm = %f \n", n);
+                        ts->printf(ts->LOG, "norm = %f > expected = %f \n", n, expected);
                         ts->set_failed_test_info(ts->FAIL_MISMATCH);
                     }
                 }
@@ -296,7 +299,7 @@ public:
 
             ASSERT_TRUE(img.channels() == 4);
 
-            unsigned char* img_data = (unsigned char*)img.data;
+            unsigned char* img_data = img.ptr();
 
             // Verification first pixel is red in BGRA
             ASSERT_TRUE(img_data[0] == 0x00);
@@ -316,7 +319,7 @@ public:
 
             ASSERT_TRUE(img.channels() == 3);
 
-            img_data = (unsigned char*)img.data;
+            img_data = img.ptr();
 
             // Verification first pixel is red in BGR
             ASSERT_TRUE(img_data[0] == 0x00);
@@ -334,7 +337,7 @@ public:
 
             ASSERT_TRUE(img.channels() == 3);
 
-            img_data = (unsigned char*)img.data;
+            img_data = img.ptr();
 
             // Verification first pixel is red in BGR
             ASSERT_TRUE(img_data[0] == 0x00);
@@ -352,7 +355,7 @@ public:
 
             ASSERT_TRUE(img.channels() == 3);
 
-            img_data = (unsigned char*)img.data;
+            img_data = img.ptr();
 
             // Verification first pixel is red in BGR
             ASSERT_TRUE(img_data[0] == 0x00);
