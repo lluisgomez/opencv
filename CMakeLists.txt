@@ -56,6 +56,11 @@ if(POLICY CMP0026)
   cmake_policy(SET CMP0026 OLD)
 endif()
 
+if (POLICY CMP0042)
+  # silence cmake 3.0+ warnings about MACOSX_RPATH
+  cmake_policy(SET CMP0042 OLD)
+endif()
+
 # must go before the project command
 set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "Configs" FORCE)
 if(DEFINED CMAKE_BUILD_TYPE)
@@ -244,6 +249,7 @@ OCV_OPTION(ENABLE_NOISY_WARNINGS      "Show all warnings even if they are too no
 OCV_OPTION(OPENCV_WARNINGS_ARE_ERRORS "Treat warnings as errors"                                 OFF )
 OCV_OPTION(ANDROID_EXAMPLES_WITH_LIBS "Build binaries of Android examples with native libraries" OFF  IF ANDROID )
 OCV_OPTION(ENABLE_IMPL_COLLECTION     "Collect implementation data on function call"             OFF )
+OCV_OPTION(GENERATE_ABI_DESCRIPTOR    "Generate XML file for abi_compliance_checker tool" OFF IF UNIX)
 
 if(ENABLE_IMPL_COLLECTION)
   add_definitions(-DCV_COLLECT_IMPL_DATA)
@@ -274,8 +280,6 @@ endif()
 
 if(ANDROID OR WIN32)
   set(OPENCV_DOC_INSTALL_PATH doc)
-elseif(INSTALL_TO_MANGLED_PATHS)
-  set(OPENCV_DOC_INSTALL_PATH share/OpenCV-${OPENCV_VERSION}/doc)
 else()
   set(OPENCV_DOC_INSTALL_PATH share/OpenCV/doc)
 endif()
@@ -309,6 +313,10 @@ if(NOT OPENCV_TEST_INSTALL_PATH)
   set(OPENCV_TEST_INSTALL_PATH "${OPENCV_BIN_INSTALL_PATH}")
 endif()
 
+if (OPENCV_TEST_DATA_PATH)
+  get_filename_component(OPENCV_TEST_DATA_PATH ${OPENCV_TEST_DATA_PATH} ABSOLUTE)
+endif()
+
 if(OPENCV_TEST_DATA_PATH AND NOT OPENCV_TEST_DATA_INSTALL_PATH)
   if(ANDROID)
     set(OPENCV_TEST_DATA_INSTALL_PATH "sdk/etc/testdata")
@@ -327,9 +335,11 @@ if(ANDROID)
   set(OPENCV_CONFIG_INSTALL_PATH  sdk/native/jni)
   set(OPENCV_INCLUDE_INSTALL_PATH sdk/native/jni/include)
   set(OPENCV_SAMPLES_SRC_INSTALL_PATH samples/native)
+  set(OPENCV_OTHER_INSTALL_PATH   sdk/etc)
 else()
   set(LIBRARY_OUTPUT_PATH         "${OpenCV_BINARY_DIR}/lib")
   set(3P_LIBRARY_OUTPUT_PATH      "${OpenCV_BINARY_DIR}/3rdparty/lib${LIB_SUFFIX}")
+
   if(WIN32 AND CMAKE_HOST_SYSTEM_NAME MATCHES Windows)
     if(OpenCV_STATIC)
       set(OPENCV_LIB_INSTALL_PATH   "${OpenCV_INSTALL_BINARIES_PREFIX}staticlib${LIB_SUFFIX}")
@@ -338,10 +348,14 @@ else()
     endif()
     set(OPENCV_3P_LIB_INSTALL_PATH  "${OpenCV_INSTALL_BINARIES_PREFIX}staticlib${LIB_SUFFIX}")
     set(OPENCV_SAMPLES_SRC_INSTALL_PATH    samples/native)
+    set(OPENCV_JAR_INSTALL_PATH java)
+    set(OPENCV_OTHER_INSTALL_PATH   etc)
   else()
     set(OPENCV_LIB_INSTALL_PATH     lib${LIB_SUFFIX})
     set(OPENCV_3P_LIB_INSTALL_PATH  share/OpenCV/3rdparty/${OPENCV_LIB_INSTALL_PATH})
     set(OPENCV_SAMPLES_SRC_INSTALL_PATH    share/OpenCV/samples)
+    set(OPENCV_JAR_INSTALL_PATH share/OpenCV/java)
+    set(OPENCV_OTHER_INSTALL_PATH   share/OpenCV)
   endif()
   set(OPENCV_INCLUDE_INSTALL_PATH "include")
 
@@ -358,7 +372,15 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 if(INSTALL_TO_MANGLED_PATHS)
   set(OPENCV_INCLUDE_INSTALL_PATH ${OPENCV_INCLUDE_INSTALL_PATH}/opencv-${OPENCV_VERSION})
+  string(REPLACE "OpenCV" "OpenCV-${OPENCV_VERSION}" OPENCV_3P_LIB_INSTALL_PATH "${OPENCV_3P_LIB_INSTALL_PATH}")
+  string(REPLACE "OpenCV" "OpenCV-${OPENCV_VERSION}" OPENCV_SAMPLES_SRC_INSTALL_PATH "${OPENCV_SAMPLES_SRC_INSTALL_PATH}")
+  string(REPLACE "OpenCV" "OpenCV-${OPENCV_VERSION}" OPENCV_CONFIG_INSTALL_PATH "${OPENCV_CONFIG_INSTALL_PATH}")
+  string(REPLACE "OpenCV" "OpenCV-${OPENCV_VERSION}" OPENCV_DOC_INSTALL_PATH "${OPENCV_DOC_INSTALL_PATH}")
+  string(REPLACE "OpenCV" "OpenCV-${OPENCV_VERSION}" OPENCV_JAR_INSTALL_PATH "${OPENCV_JAR_INSTALL_PATH}")
+  string(REPLACE "OpenCV" "OpenCV-${OPENCV_VERSION}" OPENCV_TEST_DATA_INSTALL_PATH "${OPENCV_TEST_DATA_INSTALL_PATH}")
+  string(REPLACE "OpenCV" "OpenCV-${OPENCV_VERSION}" OPENCV_OTHER_INSTALL_PATH "${OPENCV_OTHER_INSTALL_PATH}")
 endif()
+
 
 if(WIN32)
   # Postfix of DLLs:
@@ -623,20 +645,27 @@ include(cmake/OpenCVGenConfig.cmake)
 # Generate Info.plist for the IOS framework
 include(cmake/OpenCVGenInfoPlist.cmake)
 
+# Generate ABI descriptor
+include(cmake/OpenCVGenABI.cmake)
+
 # Generate environment setup file
-if(INSTALL_TESTS AND OPENCV_TEST_DATA_PATH AND UNIX)
+if(INSTALL_TESTS AND OPENCV_TEST_DATA_PATH)
   if(ANDROID)
     get_filename_component(TEST_PATH ${OPENCV_TEST_INSTALL_PATH} DIRECTORY)
     configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/templates/opencv_run_all_tests_android.sh.in"
                    "${CMAKE_BINARY_DIR}/unix-install/opencv_run_all_tests.sh" @ONLY)
     install(PROGRAMS "${CMAKE_BINARY_DIR}/unix-install/opencv_run_all_tests.sh"
             DESTINATION ${CMAKE_INSTALL_PREFIX} COMPONENT tests)
-  else()
+  elseif(WIN32)
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/templates/opencv_run_all_tests_windows.cmd.in"
+                   "${CMAKE_BINARY_DIR}/win-install/opencv_run_all_tests.cmd" @ONLY)
+    install(PROGRAMS "${CMAKE_BINARY_DIR}/win-install/opencv_run_all_tests.cmd"
+            DESTINATION ${OPENCV_TEST_INSTALL_PATH} COMPONENT tests)
+  elseif(UNIX)
     configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/templates/opencv_run_all_tests_unix.sh.in"
                    "${CMAKE_BINARY_DIR}/unix-install/opencv_run_all_tests.sh" @ONLY)
     install(PROGRAMS "${CMAKE_BINARY_DIR}/unix-install/opencv_run_all_tests.sh"
             DESTINATION ${OPENCV_TEST_INSTALL_PATH} COMPONENT tests)
-
   endif()
 endif()
 
@@ -959,8 +988,9 @@ if(DEFINED WITH_V4L)
   else()
     set(HAVE_CAMV4L2_STR "NO")
   endif()
-  status("    V4L/V4L2:"       HAVE_LIBV4L         THEN "Using libv4l (ver ${ALIASOF_libv4l1_VERSION})"
-                                                   ELSE "${HAVE_CAMV4L_STR}/${HAVE_CAMV4L2_STR}")
+  status("    V4L/V4L2:"       HAVE_LIBV4L
+             THEN "Using libv4l1 (ver ${ALIASOF_libv4l1_VERSION}) / libv4l2 (ver ${ALIASOF_libv4l2_VERSION})"
+             ELSE "${HAVE_CAMV4L_STR}/${HAVE_CAMV4L2_STR}")
 endif(DEFINED WITH_V4L)
 
 if(DEFINED WITH_DSHOW)

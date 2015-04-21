@@ -10,6 +10,7 @@ endif()
 set(the_description "The java bindings")
 ocv_add_module(java BINDINGS opencv_core opencv_imgproc)
 ocv_module_include_directories("${CMAKE_CURRENT_SOURCE_DIR}/generator/src/cpp")
+ocv_module_include_directories("${OpenCV_SOURCE_DIR}/include")
 
 if(NOT ANDROID)
   include_directories(${JNI_INCLUDE_DIRS})
@@ -173,8 +174,8 @@ endforeach()
 file(REMOVE_RECURSE "${probe_dir}")
 
 if(NOT ANDROID)
-  ocv_list_filterout(handwritten_java_sources "/(engine|android)\\\\+")
-  ocv_list_filterout(handwritten_aidl_sources "/(engine|android)\\\\+")
+  ocv_list_filterout(handwritten_java_sources "/(engine3|android)\\\\+")
+  ocv_list_filterout(handwritten_aidl_sources "/(engine3|android)\\\\+")
 else()
   file(GLOB_RECURSE handwrittren_lib_project_files_rel RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/android_lib/" "${CMAKE_CURRENT_SOURCE_DIR}/android_lib/*")
   list(REMOVE_ITEM handwrittren_lib_project_files_rel "${ANDROID_MANIFEST_FILE}")
@@ -318,12 +319,7 @@ else(ANDROID)
                      COMMENT "Generating ${JAR_NAME}"
                     )
 
-  if(WIN32)
-    set(JAR_INSTALL_DIR java)
-  else(WIN32)
-    set(JAR_INSTALL_DIR share/OpenCV/java)
-  endif(WIN32)
-  install(FILES ${JAR_FILE} OPTIONAL DESTINATION ${JAR_INSTALL_DIR} COMPONENT java)
+  install(FILES ${JAR_FILE} OPTIONAL DESTINATION ${OPENCV_JAR_INSTALL_PATH} COMPONENT java)
 endif(ANDROID)
 
 # step 5: build native part
@@ -398,12 +394,12 @@ if(ANDROID)
 else()
   if(NOT INSTALL_CREATE_DISTRIB)
     ocv_install_target(${the_module} OPTIONAL EXPORT OpenCVModules
-            RUNTIME DESTINATION ${JAR_INSTALL_DIR} COMPONENT java
-            LIBRARY DESTINATION ${JAR_INSTALL_DIR} COMPONENT java)
+            RUNTIME DESTINATION ${OPENCV_JAR_INSTALL_PATH} COMPONENT java
+            LIBRARY DESTINATION ${OPENCV_JAR_INSTALL_PATH} COMPONENT java)
   else()
     ocv_install_target(${the_module} OPTIONAL EXPORT OpenCVModules
-            RUNTIME DESTINATION ${JAR_INSTALL_DIR}/${OpenCV_ARCH} COMPONENT java
-            LIBRARY DESTINATION ${JAR_INSTALL_DIR}/${OpenCV_ARCH} COMPONENT java)
+            RUNTIME DESTINATION ${OPENCV_JAR_INSTALL_PATH}/${OpenCV_ARCH} COMPONENT java
+            LIBRARY DESTINATION ${OPENCV_JAR_INSTALL_PATH}/${OpenCV_ARCH} COMPONENT java)
   endif()
 endif()
 
