@@ -50,6 +50,26 @@
 namespace cv
 {
 
+int LU(float* A, size_t astep, int m, float* b, size_t bstep, int n)
+{
+    return hal::LU(A, astep, m, b, bstep, n);
+}
+
+int LU(double* A, size_t astep, int m, double* b, size_t bstep, int n)
+{
+    return hal::LU(A, astep, m, b, bstep, n);
+}
+
+bool Cholesky(float* A, size_t astep, int m, float* b, size_t bstep, int n)
+{
+    return hal::Cholesky(A, astep, m, b, bstep, n);
+}
+
+bool Cholesky(double* A, size_t astep, int m, double* b, size_t bstep, int n)
+{
+    return hal::Cholesky(A, astep, m, b, bstep, n);
+}
+
 template<typename _Tp> static inline _Tp hypot(_Tp a, _Tp b)
 {
     a = std::abs(a);
@@ -502,7 +522,7 @@ JacobiSVDImpl_(_Tp* At, size_t astep, _Tp* _W, _Tp* Vt, size_t vstep,
     {
         sd = i < n ? W[i] : 0;
 
-        while( sd <= minval )
+        for( int ii = 0; ii < 100 && sd <= minval; ii++ )
         {
             // if we got a zero singular value, then in order to get the corresponding left singular vector
             // we generate a random vector, project it to the previously computed left singular vectors,
@@ -527,7 +547,7 @@ JacobiSVDImpl_(_Tp* At, size_t astep, _Tp* _W, _Tp* Vt, size_t vstep,
                         At[i*astep + k] = t;
                         asum += std::abs(t);
                     }
-                    asum = asum ? 1/asum : 0;
+                    asum = asum > eps*100 ? 1/asum : 0;
                     for( k = 0; k < m; k++ )
                         At[i*astep + k] *= asum;
                 }
@@ -541,7 +561,7 @@ JacobiSVDImpl_(_Tp* At, size_t astep, _Tp* _W, _Tp* Vt, size_t vstep,
             sd = std::sqrt(sd);
         }
 
-        s = (_Tp)(1/sd);
+        s = (_Tp)(sd > minval ? 1/sd : 0.);
         for( k = 0; k < m; k++ )
             At[i*astep + k] *= s;
     }
