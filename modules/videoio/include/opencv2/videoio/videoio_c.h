@@ -63,6 +63,9 @@ typedef struct CvCapture CvCapture;
 /* start capturing frames from video file */
 CVAPI(CvCapture*) cvCreateFileCapture( const char* filename );
 
+/* start capturing frames from video file. allows specifying a preferred API to use */
+CVAPI(CvCapture*) cvCreateFileCaptureWithPreference( const char* filename , int apiPreference);
+
 enum
 {
     CV_CAP_ANY      =0,     // autodetect
@@ -111,8 +114,10 @@ enum
     CV_CAP_INTELPERC = 1500, // Intel Perceptual Computing
 
     CV_CAP_OPENNI2 = 1600,   // OpenNI2 (for Kinect)
-
-    CV_CAP_GPHOTO2 = 1700
+    CV_CAP_GPHOTO2 = 1700,
+    CV_CAP_GSTREAMER = 1800, // GStreamer
+    CV_CAP_FFMPEG = 1900,    // FFMPEG
+    CV_CAP_IMAGES = 2000     // OpenCV Image Sequence (e.g. img_%02d.jpg)
 };
 
 /* start capturing frames from camera: index = camera_index + domain_offset (CV_CAP_*) */
@@ -184,6 +189,9 @@ enum
     CV_CAP_PROP_IRIS          =36,
     CV_CAP_PROP_SETTINGS      =37,
     CV_CAP_PROP_BUFFERSIZE    =38,
+    CV_CAP_PROP_AUTOFOCUS     =39,
+    CV_CAP_PROP_SAR_NUM       =40,
+    CV_CAP_PROP_SAR_DEN       =41,
 
     CV_CAP_PROP_AUTOGRAB      =1024, // property for videoio class CvCapture_Android only
     CV_CAP_PROP_SUPPORTED_PREVIEW_SIZES_STRING=1025, // readonly, tricky property, returns cpnst char* indeed
