@@ -1,7 +1,8 @@
 # ----------------------------------------------------------------------------
 #  CMake file for java support
 # ----------------------------------------------------------------------------
-if(IOS OR WINRT OR NOT PYTHON_DEFAULT_AVAILABLE OR NOT ANT_EXECUTABLE OR NOT (JNI_FOUND OR (ANDROID AND ANDROID_NATIVE_API_LEVEL GREATER 7))
+if(APPLE_FRAMEWORK OR WINRT OR NOT PYTHON_DEFAULT_AVAILABLE OR NOT ANT_EXECUTABLE
+    OR NOT (JNI_FOUND OR (ANDROID AND ANDROID_NATIVE_API_LEVEL GREATER 7))
     OR BUILD_opencv_world
     )
   ocv_module_disable(java)
@@ -308,7 +309,7 @@ if(ANDROID)
     # build the library project
     # normally we should do this after a native part, but for a library project we can build the java part first
     add_custom_command(OUTPUT "${JAR_FILE}" "${JAR_FILE}.dephelper"
-                       COMMAND ${ANT_EXECUTABLE} -q -noinput -k debug
+                       COMMAND ${ANT_EXECUTABLE} -q -noinput -k debug -Djava.target=1.6 -Djava.source=1.6
                        COMMAND ${CMAKE_COMMAND} -E touch "${JAR_FILE}.dephelper" # can not rely on classes.jar because different versions of SDK update timestamp at different times
                        WORKING_DIRECTORY "${OpenCV_BINARY_DIR}"
                        DEPENDS ${step3_depends}
@@ -346,9 +347,16 @@ endif(ANDROID)
 # workarounding lack of `__attribute__ ((visibility("default")))` in jni_md.h/JNIEXPORT
 string(REPLACE "-fvisibility=hidden" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
-ocv_add_library(${the_module} SHARED ${handwritten_h_sources} ${handwritten_cpp_sources} ${generated_cpp_sources}
+if(ANDROID)
+  # Android native code need to link with libopencv_java.so
+  ocv_add_library(${the_module} SHARED ${handwritten_h_sources} ${handwritten_cpp_sources} ${generated_cpp_sources}
                                  ${copied_files}
                                 "${JAR_FILE}" "${JAR_FILE}.dephelper")
+else()
+  ocv_add_library(${the_module} MODULE ${handwritten_h_sources} ${handwritten_cpp_sources} ${generated_cpp_sources}
+                                 ${copied_files}
+                                "${JAR_FILE}" "${JAR_FILE}.dephelper")
+endif()
 
 if(BUILD_FAT_JAVA_LIB)
   set(__deps ${OPENCV_MODULE_${the_module}_DEPS} ${OPENCV_MODULES_BUILD})

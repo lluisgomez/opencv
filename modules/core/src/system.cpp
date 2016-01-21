@@ -64,11 +64,13 @@ Mutex* __initialization_mutex_initializer = &getInitializationMutex();
 # endif
 #endif
 
-#if defined ANDROID || defined __linux__
+#if defined ANDROID || defined __linux__ || defined __FreeBSD__
 #  include <unistd.h>
 #  include <fcntl.h>
 #  include <elf.h>
+#if defined ANDROID || defined __linux__
 #  include <linux/auxvec.h>
+#endif
 #endif
 
 #if defined WIN32 || defined _WIN32 || defined WINCE
@@ -379,19 +381,15 @@ bool checkHardwareSupport(int feature)
 
 volatile bool useOptimizedFlag = true;
 
-volatile bool USE_SSE2 = featuresEnabled.have[CV_CPU_SSE2];
-volatile bool USE_SSE4_2 = featuresEnabled.have[CV_CPU_SSE4_2];
-volatile bool USE_AVX = featuresEnabled.have[CV_CPU_AVX];
-volatile bool USE_AVX2 = featuresEnabled.have[CV_CPU_AVX2];
-
 void setUseOptimized( bool flag )
 {
     useOptimizedFlag = flag;
     currentFeatures = flag ? &featuresEnabled : &featuresDisabled;
-    USE_SSE2 = currentFeatures->have[CV_CPU_SSE2];
 
     ipp::setUseIPP(flag);
+#ifdef HAVE_OPENCL
     ocl::setUseOpenCL(flag);
+#endif
 #ifdef HAVE_TEGRA_OPTIMIZATION
     ::tegra::setUseTegra(flag);
 #endif
@@ -1087,11 +1085,14 @@ public:
 
         for(size_t i = 0; i < threads.size(); i++)
         {
-            std::vector<void*>& thread_slots = threads[i]->slots;
-            if (thread_slots.size() > slotIdx && thread_slots[slotIdx])
+            if(threads[i])
             {
-                dataVec.push_back(thread_slots[slotIdx]);
-                threads[i]->slots[slotIdx] = 0;
+                std::vector<void*>& thread_slots = threads[i]->slots;
+                if (thread_slots.size() > slotIdx && thread_slots[slotIdx])
+                {
+                    dataVec.push_back(thread_slots[slotIdx]);
+                    threads[i]->slots[slotIdx] = 0;
+                }
             }
         }
 
@@ -1118,9 +1119,12 @@ public:
 
         for(size_t i = 0; i < threads.size(); i++)
         {
-            std::vector<void*>& thread_slots = threads[i]->slots;
-            if (thread_slots.size() > slotIdx && thread_slots[slotIdx])
-                dataVec.push_back(thread_slots[slotIdx]);
+            if(threads[i])
+            {
+                std::vector<void*>& thread_slots = threads[i]->slots;
+                if (thread_slots.size() > slotIdx && thread_slots[slotIdx])
+                    dataVec.push_back(thread_slots[slotIdx]);
+            }
         }
     }
 
